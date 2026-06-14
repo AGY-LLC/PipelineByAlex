@@ -1,0 +1,66 @@
+name: Nightly dependency audit
+
+# A HIGH/CRITICAL advisory can be published against an existing, unchanged
+# dependency at any time. Without this, the first signal is the `audit` job
+# failing on whatever unrelated PR pushes next (runs 27230022023 and
+# 27221293817 both died this way). A nightly sweep makes a new advisory its
+# own red run — fix the dependency on its own schedule, and feature PRs stay
+# about the feature.
+#
+# NOTE: GitHub only evaluates `schedule` triggers from the DEFAULT branch, so
+# this starts firing once the file reaches `main`. `workflow_dispatch` works
+# from any branch the file exists on in the meantime.
+on:
+  schedule:
+    - cron: '17 9 * * *' # daily 09:17 UTC (~02:17 PT) — off the :00 rush
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    name: Audit ${{ matrix.ref }} (prod deps, high+)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # staging is the active working branch pre-launch and can carry deps
+        # main doesn't have yet; sweep both.
+        ref: [main, staging]
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          ref: ${{ matrix.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      # Same bounded retry as ci.yml's audit job: a registry blip gets
+      # another chance, a real advisory still exits non-zero after 3 tries.
+      - name: Audit server (prod deps, high+)
+        working-directory: server
+        run: |
+          for attempt in 1 2 3; do
+            pnpm audit --prod --audit-level high && exit 0
+            [ "$attempt" = 3 ] && exit 1
+            echo "pnpm audit failed (attempt ${attempt}/3); retrying in 30s" >&2
+            sleep 30
+          done
+
+      - name: Audit client (prod deps, high+)
+        working-directory: app
+        run: |
+          for attempt in 1 2 3; do
+            pnpm audit --prod --audit-level high && exit 0
+            [ "$attempt" = 3 ] && exit 1
+            echo "pnpm audit failed (attempt ${attempt}/3); retrying in 30s" >&2
+            sleep 30
+          done

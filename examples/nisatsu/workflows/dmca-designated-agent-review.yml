@@ -1,0 +1,40 @@
+name: DMCA designated agent review
+
+on:
+  schedule:
+    # Annual compliance check. The Copyright Office renewal window is every
+    # three years, but a yearly verification catches stale contact info and
+    # keeps the renewal date visible before the 90-day reminder window.
+    - cron: '0 15 15 1 *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  open-review-issue:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create annual DMCA verification issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          title='DMCA designated agent annual verification'
+          existing="$(gh issue list \
+            --repo "$REPO" \
+            --state open \
+            --search "$title in:title" \
+            --json number \
+            --jq 'length')"
+          if [ "$existing" != "0" ]; then
+            echo "An open DMCA verification issue already exists."
+            exit 0
+          fi
+
+          gh issue create \
+            --repo "$REPO" \
+            --title "$title" \
+            --body "Run docs/dmca-agent-setup.md renewal verification. Attach a fresh screenshot of the U.S. Copyright Office DMCA Designated Agent Directory entry for NISATSU LLC, include the directory search URL, record the current expiration/renewal date, and confirm server/src/lib/constants.ts still matches the public directory before closing this issue."

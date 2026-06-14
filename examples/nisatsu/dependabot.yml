@@ -1,0 +1,81 @@
+# Dependency vulnerability scanning + automated update PRs.
+# Closes FIND-077: the project shipped without any SCA gate, so a
+# vulnerable transitive dep could land silently. Dependabot opens
+# weekly grouped PRs (so review load stays bounded) and surfaces
+# security advisories immediately.
+version: 2
+updates:
+  # Server (Next.js + Prisma + Stytch + RC + OpenAI stack — auth and
+  # billing live here; this is the highest-stakes lockfile.)
+  - package-ecosystem: npm
+    directory: /server
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      types-and-tooling:
+        patterns:
+          - "@types/*"
+          - "typescript"
+          - "eslint*"
+          - "prettier"
+          - "jest*"
+          - "@testing-library/*"
+          - "ts-jest"
+          - "ts-node"
+        update-types: ["minor", "patch"]
+      framework-and-runtime:
+        patterns:
+          - "next"
+          - "react"
+          - "react-dom"
+          - "@sentry/*"
+          - "@prisma/*"
+          - "prisma"
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps(server)"
+    labels:
+      - dependencies
+      - server
+
+  # Mobile (Expo + React Native).
+  - package-ecosystem: npm
+    directory: /app
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      types-and-tooling:
+        patterns:
+          - "@types/*"
+          - "typescript"
+          - "jest*"
+          - "@testing-library/*"
+        update-types: ["minor", "patch"]
+      expo-and-rn:
+        patterns:
+          - "expo*"
+          - "react-native*"
+          - "@react-native*"
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "deps(app)"
+    labels:
+      - dependencies
+      - mobile
+
+  # GitHub Actions versions.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: "ci"
+    labels:
+      - dependencies
+      - ci

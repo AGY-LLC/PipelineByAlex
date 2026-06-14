@@ -1,0 +1,113 @@
+name: CI
+
+# FIND-092: CI is read-only — no need for write access to the repo.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [main, dev]
+  # pull_request branches filter is the *target* branch.
+  pull_request:
+    branches: [main, dev]
+
+# Cancel in-progress CI runs when a new commit lands on the same ref.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ─── Husky hook syntax sanity check ───────────────────────────────────────
+  husky:
+    name: Validate husky pre-commit hook
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell-syntax check on .husky/pre-commit
+        run: sh -n .husky/pre-commit
+      - name: Hook is executable
+        run: test -x .husky/pre-commit
+
+  # ─── Server: typecheck + tests ─────────────────────────────────────────────
+  server:
+    name: Server (typecheck + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm/action-setup must run before actions/setup-node so the cache
+      # plumbing (cache: pnpm) can find the pnpm binary it needs.
+      # Version is sourced from the root package.json's `packageManager`
+      # field — passing `with: version` here as well makes the action error
+      # out with ERR_PNPM_BAD_PM_VERSION.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      # Install with --frozen-lockfile to fail loudly if pnpm-lock.yaml drifts.
+      # The server's `postinstall` hook runs `prisma generate` for us, so we
+      # don't need an explicit Prisma generate step.
+      - name: Install server deps
+        working-directory: server
+        run: pnpm install --frozen-lockfile
+
+      # Stale Next.js .next/types/validator.ts artifacts can reference routes
+      # that no longer exist (e.g. removed graphql/sentry-example-api routes)
+      # and break tsc. Wipe before typechecking.
+      - name: Clean stale .next artifacts
+        working-directory: server
+        run: rm -rf .next
+
+      - name: Lint server
+        working-directory: server
+        run: pnpm run lint
+
+      - name: Typecheck server
+        working-directory: server
+        run: pnpm run typecheck
+
+      - name: Run server tests
+        working-directory: server
+        run: pnpm test
+
+  # ─── Client: typecheck ─────────────────────────────────────────────────────
+  # No client test suite yet (client/package.json's `test` is a placeholder),
+  # so only typecheck + lint runs here. Add a `test` step if/when real tests land.
+  client:
+    name: Client (typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm/action-setup must run before actions/setup-node so the cache
+      # plumbing (cache: pnpm) can find the pnpm binary it needs.
+      # Version is sourced from the root package.json's `packageManager`
+      # field — passing `with: version` here as well makes the action error
+      # out with ERR_PNPM_BAD_PM_VERSION.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Install client deps
+        working-directory: client
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint client
+        working-directory: client
+        run: pnpm run lint
+
+      - name: Typecheck client
+        working-directory: client
+        run: pnpm run typecheck

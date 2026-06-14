@@ -1,0 +1,144 @@
+name: ponzu-synthesis-review
+
+# Required status check that gates merging on the presence of a completed
+# Ponzu Synthesis Review. The synthesis review itself is posted to the PR by
+# the external Ponzu watcher; this workflow simply asserts that the review
+# artifact and review label are present, so branch protection can require it.
+
+on:
+  pull_request:
+    branches: [main]
+    # ``opened`` is intentionally NOT listed. The Ponzu synthesis
+    # watcher rewrites the PR body within seconds of a PR opening,
+    # but the workflow firing on ``opened`` runs BEFORE the watcher
+    # has a chance to post and reports a hard failure that never
+    # clears from GitHub's check view even after later runs pass.
+    # Triggering only on the events that fire AFTER the watcher
+    # update guarantees one assertion against a synthesized body.
+    types:
+      - reopened
+      - synchronize
+      - edited
+      - labeled
+      - unlabeled
+      - ready_for_review
+
+# Cancel any in-flight enforcement run for this PR when a newer one
+# arrives — the watcher's body-edit + label sequence triggers several
+# overlapping runs; only the latest reflects the current PR body.
+concurrency:
+  group: synthesis-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  enforce:
+    name: enforce synthesis review
+    runs-on: [self-hosted, linux, x64, ponzu-ai-ci]
+    steps:
+      - name: Assert Ponzu Synthesis Review is present
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            if (!pr) {
+              core.setFailed('No pull_request payload; this workflow must run on pull_request events.');
+              return;
+            }
+
+            const body = pr.body || '';
+            const labels = (pr.labels || []).map(l => (l && l.name) || '').filter(Boolean);
+
+            // 1. Body must contain the Ponzu Synthesis Review marker.
+            //    The watcher posts a section beginning with "Ponzu Synthesis Review".
+            const synthesisMarker = /Ponzu Synthesis Review/i;
+            const hasSynthesis = synthesisMarker.test(body);
+
+            // 2. Body must include the COMPACT Ponzu synthesis sections:
+            //    Architecture Glance (with a real diagram, CodeRabbit/Codex
+            //    style) and Monk's Haiku. The verbose sections (30s Verdict,
+            //    Critical, What Changed, ...) are FORBIDDEN by conceptify's
+            //    compact contract (scripts/validate-pr-synthesis.mjs), so this
+            //    gate must NOT require them.
+            const requiredSections = [
+              /Architecture Glance/i,
+              /Monk.?s Haiku/i,
+            ];
+            const missingSections = requiredSections.filter(rx => !rx.test(body));
+
+            // 3. Architecture Glance must include a mermaid diagram that
+            //    actually traces a flow. We reject obvious stubs by counting
+            //    participant/node declarations and message arrows inside the
+            //    Architecture Glance mermaid block. Thresholds: >=3 nodes
+            //    and >=3 arrows. A real sequence diagram or non-trivial
+            //    flowchart easily clears both.
+            const archMatch = body.match(/Architecture Glance[\s\S]*?```mermaid([\s\S]*?)```/i);
+            const archMermaid = archMatch ? archMatch[1] : '';
+            const arrowRe = /(-->>|-->|->>|->|<-|<--)/g;
+            const arrowCount = (archMermaid.match(arrowRe) || []).length;
+            // Count distinct nodes: sequenceDiagram `participant X` lines, or
+            // flowchart node declarations like `A[Label]` / `A(Label)` / `A{...}`.
+            const participantLines = (archMermaid.match(/^\s*participant\s+\S+/gim) || []).length;
+            const flowchartNodes = new Set(
+              (archMermaid.match(/\b[A-Za-z][A-Za-z0-9_]*\s*[\[\(\{]/g) || [])
+                .map(s => s.match(/^[A-Za-z][A-Za-z0-9_]*/)[0])
+            );
+            const nodeCount = Math.max(participantLines, flowchartNodes.size);
+            const ARCH_MIN_NODES = 3;
+            const ARCH_MIN_ARROWS = 3;
+            const hasArchMermaid = archMermaid.trim().length > 0;
+            const archMeetsDepth =
+              hasArchMermaid && nodeCount >= ARCH_MIN_NODES && arrowCount >= ARCH_MIN_ARROWS;
+
+            // conceptify's compact contract (validate-pr-synthesis.mjs) accepts an
+            // Architecture Glance with NO mermaid when it explains why the change
+            // has no runtime/data-flow architecture (a "Not shown ... no/does not ...
+            // architecture" reason). Mirror that escape hatch so config-only /
+            // copy-only PRs aren't forced to fabricate a diagram.
+            const archNotShown =
+              /\bNot shown\b[\s\S]{0,260}\b(?:does not|doesn't|no)\b[\s\S]{0,260}\b(?:runtime|data[- ]flow|architecture|boundary|integration|topology)\b/i.test(body);
+
+            // 4. PR must carry at least one ponzu review status label so the
+            //    watcher state machine has advanced past "queued".
+            const reviewLabels = labels.filter(name => name.startsWith('status:'));
+            const hasReviewLabel = reviewLabels.length > 0;
+
+            core.summary
+              .addHeading('Ponzu Synthesis Review gate')
+              .addList([
+                `Synthesis marker present: ${hasSynthesis}`,
+                `Missing required sections: ${missingSections.length === 0 ? 'none' : missingSections.map(rx => rx.source).join(', ')}`,
+                `Architecture Glance mermaid present: ${hasArchMermaid}`,
+                `Architecture Glance nodes/participants: ${nodeCount} (need >= ${ARCH_MIN_NODES})`,
+                `Architecture Glance arrows: ${arrowCount} (need >= ${ARCH_MIN_ARROWS})`,
+                `Review status labels: ${reviewLabels.length > 0 ? reviewLabels.join(', ') : '(none)'}`,
+              ])
+              .write();
+
+            const problems = [];
+            if (!hasSynthesis) {
+              problems.push('PR body is missing the "Ponzu Synthesis Review" section. The synthesis watcher has not posted yet, or its section was removed.');
+            }
+            if (missingSections.length > 0) {
+              problems.push(`PR body is missing required synthesis subsections: ${missingSections.map(rx => rx.source).join(', ')}.`);
+            }
+            if (!archNotShown) {
+              if (!hasArchMermaid) {
+                problems.push('Architecture Glance is missing a ```mermaid ...``` diagram block (or a "Not shown — no runtime/data-flow architecture changed" reason). Trace the changed flow (see AGENTS.md).');
+              } else if (!archMeetsDepth) {
+                problems.push(`Architecture Glance diagram looks like a stub (nodes=${nodeCount} arrows=${arrowCount}). It must trace the actual changed flow with at least ${ARCH_MIN_NODES} participants/nodes and ${ARCH_MIN_ARROWS} message arrows (CodeRabbit/Codex style). See AGENTS.md.`);
+              }
+            }
+            if (!hasReviewLabel) {
+              problems.push('PR has no "status:*" review label. Wait for the synthesis watcher to label the PR, or apply the appropriate status label.');
+            }
+
+            if (problems.length > 0) {
+              core.setFailed(['Ponzu synthesis review is not yet enforced for this PR:', ...problems.map(p => ` - ${p}`)].join('\n'));
+              return;
+            }
+
+            core.info('Ponzu synthesis review present; gate passes.');

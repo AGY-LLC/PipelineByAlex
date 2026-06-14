@@ -1,0 +1,259 @@
+name: ci
+
+# Budget discipline: a workflow run = ~1-5 minutes of paid Blacksmith
+# runner time ([self-hosted, linux, x64, ponzu-ai-ci] — ~half the per-minute cost
+# of GitHub-hosted ubuntu-latest, with faster cold starts). Every job
+# here earns its slot by gating a class of regression that would
+# otherwise reach production. The expensive jobs (docker + Trivy) only
+# run when their inputs changed; cheap jobs (ruff, mypy, pytest, ~1 min
+# combined) always run because their cost is in the noise.
+# Concurrency-cancel on rapid pushes means a 5-commit branch burns 1×
+# CI, not 5×. ``timeout-minutes`` caps every job so a wedged tool can't
+# drain the budget on its own.
+
+on:
+  pull_request:
+    branches: [main]
+    # Draft PRs skip the expensive jobs (see ``if:`` per-job). Marking
+    # ready-for-review re-triggers and runs the full gate.
+    types: [opened, reopened, synchronize, ready_for_review]
+  push:
+    branches: [main]
+
+# Cancel any in-flight run on the same ref when a newer commit lands.
+# Rapid-push branches no longer pile up runners.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Single fast probe (~5s) that classifies what the PR touched. Used by
+  # the expensive ``docker`` job below to short-circuit when neither the
+  # Dockerfile, the Python source, nor the CI config itself changed.
+  #
+  # Implementation note: dependency-free ``git diff`` rather than a
+  # third-party paths-filter action. Fewer moving parts, no permission
+  # tweaks needed, easy to debug from the log (the diff list prints).
+  changes:
+    name: detect changes
+    runs-on: [self-hosted, linux, x64, ponzu-ai-ci]
+    timeout-minutes: 2
+    outputs:
+      docker_relevant: ${{ steps.filter.outputs.docker_relevant }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          # Need history to diff against the PR base (or the previous
+          # commit on push-to-main). fetch-depth=0 is a full clone — on
+          # this repo (small, no LFS) it's ~2s and removes the "missing
+          # base ref" failure mode that shallow clones cause.
+          fetch-depth: 0
+
+      - name: Compute changed paths
+        id: filter
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            git fetch origin "${BASE_REF}" --depth=1
+            base="origin/${BASE_REF}"
+          else
+            # push event. github.event.before is the previous commit on
+            # this ref; empty (000000…) on the first push of a new ref.
+            if [ -z "${BEFORE_SHA}" ] || [ "${BEFORE_SHA}" = "0000000000000000000000000000000000000000" ]; then
+              # No prior commit to diff against (first push); treat as
+              # docker-relevant so the safety gate fires.
+              echo "docker_relevant=true" >> "${GITHUB_OUTPUT}"
+              echo "First push to ref — defaulting docker_relevant=true."
+              exit 0
+            fi
+            base="${BEFORE_SHA}"
+          fi
+          echo "Diffing ${base}...HEAD"
+          changed="$(git diff --name-only "${base}...HEAD")"
+          echo "Changed files:"
+          echo "${changed}"
+          if echo "${changed}" | grep -E '^(Dockerfile|\.dockerignore|pyproject\.toml|src/|\.github/workflows/ci\.yml)' > /dev/null; then
+            echo "docker_relevant=true" >> "${GITHUB_OUTPUT}"
+            echo "Docker-relevant paths changed → docker job will run."
+          else
+            echo "docker_relevant=false" >> "${GITHUB_OUTPUT}"
+            echo "No docker-relevant paths changed → docker job will skip."
+          fi
+
+  lint:
+    name: ruff + mypy
+    runs-on: [self-hosted, linux, x64, ponzu-ai-ci]
+    # ruff + mypy on this tree run in ~30s; 10 min is a wide cap to
+    # absorb a slow runner without burning the budget on a wedged tool.
+    timeout-minutes: 10
+    # Always run lint, including on drafts — type/lint feedback during
+    # WIP is high-value relative to the ~30s cost.
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package and dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Ruff
+        run: ruff check .
+
+      - name: Mypy
+        run: mypy
+
+  test:
+    name: pytest
+    runs-on: [self-hosted, linux, x64, ponzu-ai-ci]
+    timeout-minutes: 15
+    # Skip the test suite on draft PRs — drafts are explicitly WIP and
+    # the cost (a postgres service container + pytest run, ~1-2 min) is
+    # non-trivial when applied to every push on a draft. Re-runs as
+    # soon as the PR is marked ready_for_review.
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11"]
+    services:
+      # Exercises the Postgres run/vector/thread stores. The pgvector
+      # image is plain postgres:16 plus the "vector" extension, which
+      # the RAG store's CREATE EXTENSION needs.
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_DB: ponzu_ai_test
+          # Ephemeral CI-only container reachable solely from this
+          # job's localhost. ``trust`` auth means no password is set,
+          # so there is no hardcoded credential to leak, scan-flag,
+          # or rotate.
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          # Dynamic host port: avoids colliding with the box's existing
+          # Postgres on the shared self-hosted runner. Referenced below via
+          # job.services.postgres.ports['5432'].
+          - 5432/tcp
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package and dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      # pytest loads --cov from pyproject addopts; the coverage floor
+      # (fail_under) is enforced via [tool.coverage.report]. Emit JUnit
+      # + coverage XML so a failed run leaves artifacts to inspect.
+      - name: Run pytest
+        env:
+          # Connect to the postgres service via its dynamically-assigned host port.
+          PONZU_AI_TEST_DATABASE_URL: postgresql://postgres@localhost:${{ job.services.postgres.ports['5432'] }}/ponzu_ai_test
+        run: pytest -q --junitxml=pytest-results.xml --cov-report=xml:coverage.xml
+
+      # Upload only on failure — successful runs don't need the
+      # artifact and the upload itself counts against storage quota.
+      - name: Upload test artifacts
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pytest-results-${{ matrix.python-version }}
+          path: |
+            pytest-results.xml
+            coverage.xml
+          retention-days: 14
+
+  docker:
+    name: docker build + scan
+    runs-on: [self-hosted, linux, x64, ponzu-ai-ci]
+    # The most expensive job in this workflow (~3-5 min cold, ~1 min
+    # with cache hit). Skip on:
+    #   - draft PRs (no value gating WIP),
+    #   - changes that can't affect the image (docs, evals, dashboard,
+    #     tests-only). The ``changes`` job's path filter gates this.
+    # Always runs on push to main so any merge that touched the image
+    # inputs is validated against the integration boundary.
+    needs: changes
+    if: >-
+      (github.event_name == 'push' || github.event.pull_request.draft == false)
+      && needs.changes.outputs.docker_relevant == 'true'
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+
+      # Builds the production image on every relevant PR so Dockerfile
+      # drift (broken layer order, removed dependency, wrong base
+      # image) surfaces here rather than at deploy time. We do NOT
+      # push the image — image publication is a separate tag-/release-
+      # triggered workflow that gates on this one passing.
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+        with:
+          # Host networking for the buildkit container so it uses the host's
+          # working DNS. On the self-hosted (WSL) runner the default
+          # docker-container builder can't resolve registry-1.docker.io
+          # (i/o timeout); the host daemon can, so share its network.
+          driver-opts: network=host
+
+      - name: Build image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: false
+          load: true
+          tags: ponzu-ai:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Trivy scans the built image for OS + Python CVEs and prints a
+      # table to the workflow log. Currently **advisory** (``exit-code:
+      # '0'``): the langchain/nemoguardrails compatibility pins
+      # (``nemoguardrails<0.12``, ``langchain-openai<0.3``) hold their
+      # transitive deps back, so a blocking gate would lock every PR on
+      # findings we can't act on at PR time. The scan still runs every
+      # docker-relevant PR, so findings are visible in the log for
+      # operator triage.
+      #
+      # Ratchet plan: once each surfaced CVE is triaged into either a
+      # pin upgrade or a ``.trivyignore`` entry with a written
+      # rationale, flip ``exit-code`` back to ``'1'`` so the gate
+      # blocks new findings. See ``docs/ci-cd.md`` for the current
+      # state of this ratchet.
+      #
+      # ``ignore-unfixed: true`` skips CVEs that have no patch
+      # available — even in advisory mode they're noise, since there's
+      # nothing to do about them at the PR level.
+      - name: Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ponzu-ai:ci
+          format: table
+          exit-code: '0'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+          vuln-type: os,library

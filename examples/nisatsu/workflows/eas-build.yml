@@ -1,0 +1,119 @@
+name: EAS Build (mobile)
+
+on:
+  push:
+    tags:
+      - 'mobile-v*'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'EAS build profile (development / preview / staging / production)'
+        required: true
+        # `preview` is the safe default for ad-hoc runs from the Actions tab —
+        # an accidental click shouldn't consume an EAS slot on a real prod
+        # binary. Tag pushes (mobile-v*) still build `production` via the
+        # `|| 'production'` fallback at the eas-build step below.
+        default: 'preview'
+      platform:
+        description: 'Platform (all / ios / android)'
+        required: true
+        default: 'all'
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Client verify
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # FIND-011: app/app.json ships a placeholder EAS projectId and
+      # app/eas.json ships placeholder Apple submit fields. A mobile-v* tag
+      # would otherwise spend a paid EAS build slot on a binary whose push
+      # notifications are broken (getExpoPushTokenAsync needs a real
+      # projectId) and which `eas submit` cannot ship. Fail the build until
+      # the real values are committed: run `eas project:init` and fill
+      # app/eas.json's submit.production.ios block.
+      - name: Reject EAS config placeholders
+        run: |
+          # Broad placeholder net across both EAS config files. `FILL-IN`
+          # is the original sentinel, but a half-finished edit can leave
+          # `CHANGEME` / `TODO` / `XXX` behind too — reject any of them.
+          if grep -nE 'FILL-IN|CHANGEME|TODO|XXX' app/app.json app/eas.json; then
+            echo "::error::app/app.json or app/eas.json still contains a placeholder — run 'eas project:init' and fill the Apple submit fields before tagging a mobile release."
+            exit 1
+          fi
+          # A real projectId is a UUID. getExpoPushTokenAsync needs it at
+          # runtime, so an empty / missing / non-UUID value would ship a
+          # build with silently-dead push notifications. Extract it and
+          # require a UUID shape so the build cannot proceed otherwise.
+          PROJECT_ID="$(node -e "process.stdout.write(require('./app/app.json').expo?.extra?.eas?.projectId || '')")"
+          if ! printf '%s' "$PROJECT_ID" | grep -qiE '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'; then
+            echo "::error::app/app.json expo.extra.eas.projectId is missing or not a real UUID ('${PROJECT_ID}') — run 'eas project:init' before tagging a mobile release."
+            exit 1
+          fi
+
+      # No `version:` — pnpm/action-setup reads `packageManager` from the
+      # root package.json (pinned to pnpm@10.12.4), keeping CI in lockstep
+      # with the lockfile. ci.yml uses the same shape.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install client deps
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      # Quality gate. Pushed mobile-v* tags would otherwise trigger a paid
+      # EAS build with no verification that the code typechecks or that
+      # the test suite passes. Run both before consuming an EAS build slot.
+      - name: Typecheck client
+        working-directory: app
+        run: pnpm run typecheck
+
+      - name: Run client tests
+        working-directory: app
+        run: pnpm test
+
+  build:
+    name: EAS build
+    needs: [verify]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install client deps
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e # v8
+        with:
+          eas-version: ^13
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Run EAS build
+        working-directory: app
+        run: |
+          eas build \
+            --non-interactive \
+            --profile "${{ github.event.inputs.profile || 'production' }}" \
+            --platform "${{ github.event.inputs.platform || 'all' }}"

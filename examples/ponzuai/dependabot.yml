@@ -1,0 +1,70 @@
+# Automated dependency updates.
+#
+# Budget discipline: every dependabot PR triggers a full CI run.
+# Caps + grouping keep the cost predictable — one weekly batched PR
+# per ecosystem instead of N individual PRs that each spin up CI.
+#
+# Two streams:
+# 1. Python deps in pyproject.toml — weekly, grouped per cycle.
+# 2. GitHub Actions versions — weekly, grouped per workflow file.
+#
+# Why a low cadence (weekly): the langchain/nemoguardrails
+# compatibility window is tight; daily updates would flap the pin
+# without operator review. Quarterly is too slow for security
+# patches — which dependabot fires ad-hoc anyway under the
+# ``-security`` group.
+
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    # Hard cap. Two open PRs per ecosystem at most so a backlog
+    # can't spin up unbounded CI runs while operators are away.
+    open-pull-requests-limit: 2
+    labels:
+      - dependencies
+      - python
+    groups:
+      # One PR per cycle for the runtime deps. Patch + minor only;
+      # majors get their own PR so the langchain/nemoguardrails
+      # pin decisions get explicit operator review.
+      python-runtime:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - patch
+          - minor
+      python-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
+    # Ignore the langchain/nemoguardrails majors — the pins in
+    # pyproject.toml are intentional (compatibility window).
+    # Operators bump them deliberately, not via dependabot.
+    ignore:
+      - dependency-name: "nemoguardrails"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "langchain-openai"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Etc/UTC
+    open-pull-requests-limit: 1
+    labels:
+      - dependencies
+      - github-actions
+    groups:
+      github-actions:
+        patterns:
+          - "*"

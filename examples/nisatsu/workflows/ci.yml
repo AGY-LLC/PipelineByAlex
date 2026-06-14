@@ -1,0 +1,741 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev, staging]
+  pull_request:
+    branches: [main, dev, staging]
+
+permissions:
+  contents: read
+
+jobs:
+  # ─── Server: typecheck + tests ─────────────────────────────────────────────
+  server:
+    name: Server (typecheck + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      - name: Install server deps
+        working-directory: server
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        working-directory: server
+        run: pnpm run db:generate
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nisatsu_test
+
+      - name: Typecheck server
+        working-directory: server
+        run: pnpm run typecheck
+
+      - name: Lint server
+        working-directory: server
+        # CLAUDE.md commits the project to "zero lint warnings". Husky runs
+        # lint only on main/staging; feature-branch commits skip it
+        # entirely, and `--no-verify` defeats even that. CI is the only
+        # durable enforcement layer.
+        run: pnpm run lint
+
+      - name: Run server tests
+        working-directory: server
+        run: pnpm test
+        env:
+          # NODE_ENV=test routes around `instrumentation.ts`'s validateEnv
+          # call, but the moment any test imports a module that reads these
+          # at module-load (env.ts schema parse, signing helpers, billing
+          # config), an unset value silently breaks the suite. Seed stable
+          # dummy values so test failures are about test logic, not
+          # accidental env drift in CI runners.
+          NODE_ENV: test
+          APP_ENV: development
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nisatsu_test
+          DIRECT_URL: postgresql://postgres:postgres@localhost:5432/nisatsu_test
+          STYTCH_PROJECT_ID: ci-stytch-project
+          STYTCH_PUBLIC_TOKEN: ci-stytch-public
+          STYTCH_SECRET: ci-stytch-secret
+          NEXT_PUBLIC_APP_URL: http://localhost:3000
+          CRON_SECRET: ci-cron-secret-not-used
+          ADMIN_API_SECRET: ci-admin-secret-not-used
+          ACCOUNT_LINK_SIGNING_SECRET: ci-account-link-signing-secret-32bytes
+          OPENAI_API_KEY: '' # tests run in stub mode
+
+  # ─── Dependency vulnerability audit (SCA) ──────────────────────────────────
+  # Fails the job on a HIGH or CRITICAL CVE in any production dependency of
+  # either package. Dev-only deps (test runners, type packages) are out of
+  # scope — pinning a low CVE in `jest` to block a release would be noise.
+  # Dependabot still files PRs for everything else; this is the hard gate.
+  audit:
+    name: Dependency audit (high/critical only)
+    runs-on: ubuntu-latest
+    # This job IS blocking: the staging/prod deploy jobs list it in
+    # `needs`, so a real HIGH/CRITICAL advisory must stop the deploy.
+    # Transient registry hiccups are absorbed by the bounded retry loop
+    # on each `pnpm audit` step below, not by `continue-on-error`.
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+
+      # `pnpm audit` hits the npm advisory registry, and shared Actions
+      # runners intermittently get a 5xx / timeout there. Since this job
+      # gates the staging/prod deploys, a transient registry blip would
+      # otherwise hard-fail every deploy. Bounded retry, mirroring the
+      # ai-service docker-build loop above: a network blip gets another
+      # chance, but a real HIGH/CRITICAL advisory still exits non-zero
+      # after the retries and fails the job.
+      - name: Audit server (prod deps, high+)
+        working-directory: server
+        run: |
+          for attempt in 1 2 3; do
+            pnpm audit --prod --audit-level high && exit 0
+            [ "$attempt" = 3 ] && exit 1
+            echo "pnpm audit failed (attempt ${attempt}/3); retrying in 30s" >&2
+            sleep 30
+          done
+
+      - name: Audit client (prod deps, high+)
+        working-directory: app
+        run: |
+          for attempt in 1 2 3; do
+            pnpm audit --prod --audit-level high && exit 0
+            [ "$attempt" = 3 ] && exit 1
+            echo "pnpm audit failed (attempt ${attempt}/3); retrying in 30s" >&2
+            sleep 30
+          done
+
+
+  # ─── AI service: Docker build + pytest ────────────────────────────────────
+  ai-service:
+    name: AI service (docker build + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Resolving `FROM python:3.11-slim` is a live Docker Hub request, and
+      # shared Actions runners intermittently time out reaching the registry
+      # (`dial tcp …:443: i/o timeout`), which used to fail this job — and
+      # with it the staging deploy it gates. Bounded retry, mirroring the
+      # OMW-download retry inside the Dockerfile: a transient registry blip
+      # gets another chance, a real build failure still fails the job.
+      # FIND-010: build the production stage so a broken COPY / missing
+      # prod dependency fails CI here instead of staying green.
+      - name: Build production image
+        run: |
+          for attempt in 1 2 3; do
+            docker build --target production -t nisatsu-ai-service:prod ai-service && exit 0
+            [ "$attempt" = 3 ] && exit 1
+            echo "docker build failed (attempt ${attempt}/3); retrying in 30s" >&2
+            sleep 30
+          done
+
+      # Build the test stage (production base + dev deps + tests baked in)
+      # and run pytest against it directly. No bind mount — the previous
+      # `-v ai-service:/app` overlaid the host checkout onto the image and
+      # meant the build above was never actually exercised by the tests.
+      - name: Build test image
+        run: |
+          for attempt in 1 2 3; do
+            docker build --target test -t nisatsu-ai-service:test ai-service && exit 0
+            [ "$attempt" = 3 ] && exit 1
+            echo "docker build failed (attempt ${attempt}/3); retrying in 30s" >&2
+            sleep 30
+          done
+
+      - name: Run AI service pytest suite inside image
+        run: docker run --rm nisatsu-ai-service:test
+
+  # ─── Prisma: schema ↔ migrations drift check ───────────────────────────────
+  # Fails the PR if schema.prisma was changed without committing a matching
+  # migration file. The shadow Postgres service is a throwaway DB Prisma uses
+  # to apply the migration history and diff it against schema.prisma.
+  prisma-drift:
+    name: Prisma (schema drift check)
+    runs-on: ubuntu-latest
+    services:
+      shadow:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: shadow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      - name: Install server deps
+        working-directory: server
+        run: pnpm install --frozen-lockfile
+
+      - name: Check migrations ↔ schema drift
+        working-directory: server
+        env:
+          # Prisma 7 removed `--shadow-database-url` from `migrate diff` — the
+          # shadow URL must come from `datasource.shadowDatabaseUrl` in
+          # prisma.config.ts, which we wire from SHADOW_DATABASE_URL here.
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shadow
+        run: pnpm run db:migrate:drift-check
+
+  # ─── Migrations: append-only check ─────────────────────────────────────────
+  # Fails the PR if a migration that already exists on the base branch was
+  # modified, renamed, or deleted. The deployed `_prisma_migrations` history
+  # is keyed on the directory name, so touching a deployed migration makes
+  # `migrate deploy` replay it (crashing against later schema state) or
+  # refuse — this is how the L-10 prefix rename broke every staging deploy
+  # (run 27324819542) and it was only discoverable AFTER merge before this
+  # job existed. Pure git; no dependency install needed.
+  migrations-append-only:
+    name: Migrations (append-only check)
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # Full history so the merge-base with the PR base branch resolves.
+          fetch-depth: 0
+
+      - name: Check migrations are append-only vs the PR base
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: sh scripts/check-migrations-append-only.sh "origin/${BASE_REF}"
+
+  # ─── Migrations: staging history preflight ─────────────────────────────────
+  # Read-only check of the PR's migration tree against the LIVE staging
+  # `_prisma_migrations` table: fails the PR if the deployed history has a
+  # failed migration record, or records an applied migration the tree no
+  # longer contains. Both states make the post-merge `migrate-staging` job
+  # fail unrecoverably (P3009/P3018) — this surfaces them before merge,
+  # where the append-only check can't reach (it only sees git, not the DB).
+  staging-migration-preflight:
+    name: Migrations (staging history preflight)
+    if: github.event_name == 'pull_request' && github.base_ref == 'staging'
+    runs-on: ubuntu-latest
+    environment: staging
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      - name: Install server deps
+        working-directory: server
+        run: pnpm install --frozen-lockfile
+
+      - name: Check staging migration history compatibility
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.STAGING_DIRECT_URL }}
+        run: sh server/scripts/check-migration-history.sh
+
+  # ─── OSS license manifest drift check ──────────────────────────────────────
+  # Fails the PR if a dependency changed without regenerating the bundled
+  # attribution manifests (server/public/oss-licenses.json +
+  # app/src/assets/oss-licenses.json). Mirrors the Prisma schema-drift check.
+  # The generator walks BOTH packages' production dependency closures, so both
+  # must be installed first. `gen:licenses:check` ignores the `generatedAt`
+  # timestamp and compares only the attribution entries.
+  oss-licenses:
+    name: OSS licenses (manifest drift check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      - name: Install server deps
+        working-directory: server
+        run: pnpm install --frozen-lockfile
+
+      - name: Install client deps
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: Check OSS license manifest drift
+        working-directory: server
+        run: pnpm run gen:licenses:check
+
+  # ─── Client: typecheck + tests ─────────────────────────────────────────────
+  client:
+    name: Client (typecheck + tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+
+      - name: Install client deps
+        working-directory: app
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck client
+        working-directory: app
+        run: pnpm run typecheck
+
+      - name: Run client tests
+        working-directory: app
+        run: pnpm test
+
+  # ─── Fly deploy: staging AI service ───────────────────────────────────────
+  deploy-fly-staging:
+    name: Deploy staging AI service to Fly
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    # FIND-010: every quality gate must block the deploy. `client` (mobile
+    # typecheck + tests) and `audit` (the HIGH/CRITICAL CVE gate) were
+    # previously absent from `needs`, so a red audit or a broken mobile
+    # build still deployed.
+    needs: [server, client, audit, prisma-drift, ai-service]
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ vars.STORY_GUARDRAIL_FLY_APP || 'nisatsu-ai-staging' }}
+    concurrency:
+      group: deploy-fly-staging
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Deploy staging AI service
+        run: |
+          set -euo pipefail
+          if [ -z "${FLY_API_TOKEN:-}" ]; then
+            echo "FLY_API_TOKEN secret is not set in the staging environment."
+            exit 1
+          fi
+          # flyctl uses the working directory as the Docker build context, so
+          # run it from ai-service/ — otherwise COPY paths in the Dockerfile
+          # (e.g. `requirements.txt`) resolve against the repo root and fail.
+          docker run --rm \
+            -e FLY_API_TOKEN \
+            -v "${PWD}:/workspace" \
+            -w /workspace/ai-service \
+            ghcr.io/superfly/flyctl:latest \
+            deploy --remote-only --config fly.toml --app "$FLY_APP"
+
+      - name: Probe staging AI service health
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 10 --retry-delay 6 --max-time 10 "https://${FLY_APP}.fly.dev/healthz"
+
+  # ─── DB migrations: staging ────────────────────────────────────────────────
+  # Runs on merge to `staging` only. Applies any new migrations in
+  # prisma/migrations to the staging Neon DB.
+  # FIND-011: the test + drift gate is declared DIRECTLY here (`server`,
+  # `prisma-drift`) rather than relying purely on the transitive chain
+  # through `deploy-fly-staging`, so a refactor of the deploy job cannot
+  # silently un-gate a production-shaped migration. `deploy-fly-staging`
+  # is kept so migrations run only after the AI service is in place.
+  migrate-staging:
+    name: Migrate staging DB
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    needs: [server, prisma-drift, deploy-fly-staging]
+    runs-on: ubuntu-latest
+    environment: staging
+    services:
+      shadow:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: shadow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    # FIND-094: mirror prod's concurrency guard so two simultaneous
+    # merges to `staging` don't race two `prisma migrate deploy`
+    # invocations against the same Neon DB.
+    concurrency:
+      group: migrate-staging
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      - name: Install server deps
+        working-directory: server
+        run: pnpm install --frozen-lockfile
+
+      - name: Render pending migration SQL
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.STAGING_DIRECT_URL }}
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shadow
+        run: |
+          set -euo pipefail
+          # Prisma 7 removed `--from-url`; the datasource URL must come from
+          # prisma.config.ts, which reads DIRECT_URL (falling back to
+          # DATABASE_URL). Both are wired in this step's env block.
+          pnpm exec prisma migrate diff \
+            --from-config-datasource \
+            --to-migrations prisma/migrations \
+            --script > /tmp/staging-pending-migration.sql
+          if [ ! -s /tmp/staging-pending-migration.sql ]; then
+            echo "-- No pending schema diff detected." > /tmp/staging-pending-migration.sql
+          fi
+
+      - name: Upload pending migration SQL
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: staging-pending-migration-sql
+          path: /tmp/staging-pending-migration.sql
+          retention-days: 14
+
+      # TEMPORARY (remove once staging and prod histories are repaired):
+      # commit 1e9a789 (L-10) renamed two already-deployed migrations from
+      # 12-digit to 14-digit prefixes, so `migrate deploy` replayed them
+      # under the new names. The second replay failed (it alters a column
+      # that 20260605000200 had since dropped) and left a failed record
+      # that blocks every deploy with P3009/P3018. The DB already holds
+      # both migrations' effects from the original old-name run, so this
+      # deletes the stale old-name rows and marks the failed new-name row
+      # as applied. Idempotent; no-op on a fresh or already-repaired DB.
+      - name: Repair migration history (L-10 rename)
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.STAGING_DIRECT_URL }}
+        run: |
+          set -euo pipefail
+          pnpm exec prisma db execute --stdin <<'SQL'
+          DO $$
+          BEGIN
+            IF to_regclass('public._prisma_migrations') IS NULL THEN
+              RETURN;
+            END IF;
+            DELETE FROM "_prisma_migrations"
+             WHERE "migration_name" IN (
+               '202605110546_scout_high_indexes_webhook_attempts',
+               '202605110638_residual_db_cron_security'
+             );
+            UPDATE "_prisma_migrations"
+               SET "finished_at" = COALESCE("finished_at", "started_at"),
+                   "applied_steps_count" = GREATEST("applied_steps_count", 1),
+                   "logs" = NULL
+             WHERE "migration_name" = '20260511063800_residual_db_cron_security'
+               AND "finished_at" IS NULL
+               AND "rolled_back_at" IS NULL;
+          END $$;
+          SQL
+
+      - name: Apply migrations
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.STAGING_DIRECT_URL }}
+        run: pnpm run db:migrate:deploy
+
+      - name: Verify migration status
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.STAGING_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.STAGING_DIRECT_URL }}
+        run: pnpm run db:migrate:status
+
+  # ─── Staging: deployed integration smoke ─────────────────────────────────
+  # Runs only after staging migrations finish. It exercises the deployed
+  # /api/health route, which performs real Postgres and Upstash readiness
+  # checks instead of Jest's mocked Prisma path.
+  e2e-staging:
+    name: Staging e2e smoke
+    if: github.event_name == 'push' && github.ref == 'refs/heads/staging'
+    needs: [migrate-staging]
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      FLY_APP: ${{ vars.STORY_GUARDRAIL_FLY_APP || 'nisatsu-ai-staging' }}
+    steps:
+      - name: Probe staging app health
+        env:
+          SERVER_URL: ${{ secrets.STAGING_APP_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SERVER_URL" ]; then
+            echo "STAGING_APP_URL secret is not set in the staging environment."
+            echo "Configure it so the staging smoke can hit the deployed app after migrations."
+            exit 1
+          fi
+          curl -fsSL --retry 5 --retry-delay 5 --max-time 10 "$SERVER_URL/api/health"
+
+      - name: Probe staging AI service health
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-delay 5 --max-time 10 "https://${FLY_APP}.fly.dev/healthz"
+
+  # ─── Fly deploy: production AI service ────────────────────────────────────
+  deploy-fly-production:
+    name: Deploy production AI service to Fly
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # FIND-010: `client` and `audit` must gate the production deploy too.
+    needs: [server, client, audit, prisma-drift, ai-service]
+    runs-on: ubuntu-latest
+    # Uses the same protected GitHub Environment as prod migrations so AI
+    # service deploys are reviewed before production traffic can use them.
+    environment: production
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      FLY_APP: ${{ vars.STORY_GUARDRAIL_FLY_APP || 'nisatsu-ai' }}
+    concurrency:
+      group: deploy-fly-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Deploy production AI service
+        run: |
+          set -euo pipefail
+          if [ -z "${FLY_API_TOKEN:-}" ]; then
+            echo "FLY_API_TOKEN secret is not set in the production environment."
+            exit 1
+          fi
+          # flyctl uses the working directory as the Docker build context, so
+          # run it from ai-service/ — otherwise COPY paths in the Dockerfile
+          # (e.g. `requirements.txt`) resolve against the repo root and fail.
+          docker run --rm \
+            -e FLY_API_TOKEN \
+            -v "${PWD}:/workspace" \
+            -w /workspace/ai-service \
+            ghcr.io/superfly/flyctl:latest \
+            deploy --remote-only --config fly.toml --app "$FLY_APP"
+
+      - name: Probe production AI service health
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 10 --retry-delay 6 --max-time 10 "https://${FLY_APP}.fly.dev/healthz"
+
+  # ─── DB migrations: production ─────────────────────────────────────────────
+  # Runs on merge to `main` only. Same flow as staging but against the prod DB.
+  # Uses the `production` GitHub environment so you can require manual approval
+  # or restrict to protected branches in repo settings → Environments.
+  migrate-production:
+    name: Migrate production DB
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    # FIND-011: test + drift gate declared directly (see migrate-staging).
+    needs: [server, prisma-drift, deploy-fly-production]
+    runs-on: ubuntu-latest
+    # The production GitHub Environment must enforce required reviewers and
+    # a wait timer in repo settings; see docs/release-operations.md.
+    environment: production
+    services:
+      shadow:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: shadow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+    # Two simultaneous merges to `main` would otherwise race two
+    # `prisma migrate deploy` invocations against the same Neon DB.
+    # `cancel-in-progress: false` queues the second merge behind the
+    # first instead of cancelling — we never want to abort a half-applied
+    # migration.
+    concurrency:
+      group: migrate-prod
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
+        with:
+          version: 10.12.4
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      - name: Install server deps
+        working-directory: server
+        run: pnpm install --frozen-lockfile
+
+      - name: Render pending migration SQL
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.PRODUCTION_DIRECT_URL }}
+          SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shadow
+        run: |
+          set -euo pipefail
+          # Prisma 7 removed `--from-url`; the datasource URL must come from
+          # prisma.config.ts, which reads DIRECT_URL (falling back to
+          # DATABASE_URL). Both are wired in this step's env block.
+          pnpm exec prisma migrate diff \
+            --from-config-datasource \
+            --to-migrations prisma/migrations \
+            --script > /tmp/production-pending-migration.sql
+          if [ ! -s /tmp/production-pending-migration.sql ]; then
+            echo "-- No pending schema diff detected." > /tmp/production-pending-migration.sql
+          fi
+
+      - name: Upload pending migration SQL
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: production-pending-migration-sql
+          path: /tmp/production-pending-migration.sql
+          retention-days: 30
+
+      # TEMPORARY: same L-10 rename repair as migrate-staging (see comment
+      # there). No-op on a fresh DB or one that never ran the old-name
+      # migrations, so it is safe even though prod has no data yet.
+      - name: Repair migration history (L-10 rename)
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.PRODUCTION_DIRECT_URL }}
+        run: |
+          set -euo pipefail
+          pnpm exec prisma db execute --stdin <<'SQL'
+          DO $$
+          BEGIN
+            IF to_regclass('public._prisma_migrations') IS NULL THEN
+              RETURN;
+            END IF;
+            DELETE FROM "_prisma_migrations"
+             WHERE "migration_name" IN (
+               '202605110546_scout_high_indexes_webhook_attempts',
+               '202605110638_residual_db_cron_security'
+             );
+            UPDATE "_prisma_migrations"
+               SET "finished_at" = COALESCE("finished_at", "started_at"),
+                   "applied_steps_count" = GREATEST("applied_steps_count", 1),
+                   "logs" = NULL
+             WHERE "migration_name" = '20260511063800_residual_db_cron_security'
+               AND "finished_at" IS NULL
+               AND "rolled_back_at" IS NULL;
+          END $$;
+          SQL
+
+      - name: Apply migrations
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.PRODUCTION_DIRECT_URL }}
+        run: pnpm run db:migrate:deploy
+
+      - name: Verify migration status
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.PRODUCTION_DATABASE_URL }}
+          DIRECT_URL: ${{ secrets.PRODUCTION_DIRECT_URL }}
+        run: pnpm run db:migrate:status
+
+      - name: Post-migration app health smoke
+        # Hits the public health probe so a migration that put the app
+        # into an unbootable state (missing required column, FK violation
+        # surfaced at first query, etc.) fails this job loudly instead
+        # of being discovered by a paged-out user. PRODUCTION_APP_URL
+        # should be the same `https://…` origin Vercel serves prod from.
+        # If the secret is missing we MUST fail — silently skipping the
+        # only post-migration safety net would let a misconfigured
+        # GitHub Environment turn this job into a green no-op.
+        env:
+          SERVER_URL: ${{ secrets.PRODUCTION_APP_URL }}
+        run: |
+          if [ -z "$SERVER_URL" ]; then
+            echo "PRODUCTION_APP_URL secret is not set in the production environment."
+            echo "The post-migration health smoke is the only gate that catches an unbootable prod after a migration."
+            echo "Configure the secret in repo settings → Environments → production, then re-run this job."
+            exit 1
+          fi
+          curl -fsSL --retry 5 --retry-delay 5 --max-time 10 "$SERVER_URL/api/health"
+
+      - name: Post-migration AI service health smoke
+        env:
+          FLY_APP: ${{ vars.STORY_GUARDRAIL_FLY_APP || 'nisatsu-ai' }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-delay 5 --max-time 10 "https://${FLY_APP}.fly.dev/healthz"

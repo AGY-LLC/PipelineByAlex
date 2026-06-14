@@ -1,0 +1,156 @@
+# Database migrations — staging & production.
+#
+# This file is INACTIVE while it carries the `.template` suffix. Rename to
+# `migrations.yml` once you've followed the one-time baseline transition in
+# `docs/migrations.md`. GitHub Actions only runs files named *.yml/*.yaml.
+#
+# Trigger model:
+#   - merge to `dev`  → migrations.deploy → staging DB    (auto)
+#   - merge to `main` → migrations.deploy → production DB (required reviewer)
+#
+# Required setup:
+#   - Repo secrets:    DATABASE_URL_STAGING, DATABASE_URL_PROD
+#   - Repo environments: `staging` (no review), `production` (required reviewer)
+#   - The migration role on each DB has DDL privileges; the app role does not.
+#
+# Safety:
+#   - Concurrency group prevents two migration jobs against the same env.
+#   - Postgres advisory lock in psql layer adds belt-and-braces serialization.
+#   - `prisma migrate status` runs first; if there's nothing to apply we exit 0.
+#   - `prisma migrate deploy` is wrapped in a 5-min timeout — anything longer
+#     is almost certainly unsafe-in-prod and should be redesigned.
+
+name: DB migrations
+
+on:
+  push:
+    branches: [dev, main]
+    paths:
+      # Only fire when migrations or the schema actually change. App-only
+      # changes don't need to spin this workflow up.
+      - 'server/prisma/schema.prisma'
+      - 'server/prisma/migrations/**'
+      - '.github/workflows/migrations.yml'
+  workflow_dispatch:
+    # Manual trigger — handy for re-running a failed deploy after fixing
+    # the migration without pushing a noop commit.
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+
+# Least-privilege: this workflow doesn't write to the repo.
+permissions:
+  contents: read
+
+# Serialize within the same target environment so two pushes can't race.
+concurrency:
+  group: migrations-${{ github.event.inputs.environment || (github.ref == 'refs/heads/main' && 'production' || 'staging') }}
+  cancel-in-progress: false
+
+jobs:
+  staging:
+    if: github.ref == 'refs/heads/dev' || github.event.inputs.environment == 'staging'
+    runs-on: ubuntu-latest
+    environment: staging
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      - name: Install (server only)
+        working-directory: server
+        run: pnpm install --frozen-lockfile
+
+      - name: Status (anything to apply?)
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_STAGING }}
+        run: npx prisma migrate status
+
+      - name: Deploy (staging)
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_STAGING }}
+        run: timeout 300 npx prisma migrate deploy
+
+      # Smoke check: confirm post-deploy state is in-sync. If this fails
+      # the migration ran but didn't reach the expected end state — alert
+      # before any code that depends on the new shape rolls out.
+      - name: Verify
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_STAGING }}
+        run: |
+          OUT=$(npx prisma migrate status 2>&1) || true
+          echo "$OUT"
+          if ! echo "$OUT" | grep -q "Database schema is up to date"; then
+            echo "::error::Staging schema is not up to date after deploy."
+            exit 1
+          fi
+
+  production:
+    if: github.ref == 'refs/heads/main' || github.event.inputs.environment == 'production'
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: server/pnpm-lock.yaml
+
+      - name: Install (server only)
+        working-directory: server
+        run: pnpm install --frozen-lockfile
+
+      - name: Status (anything to apply?)
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PROD }}
+        run: npx prisma migrate status
+
+      # Pre-flight: if you wire up a managed snapshot API (Supabase / Neon /
+      # Cloud SQL), call it here. The placeholder is intentionally a noop so
+      # the workflow runs without it; replace with the real call when ready.
+      - name: Pre-deploy snapshot (placeholder — wire up to your managed DB)
+        run: |
+          echo "TODO: trigger logical snapshot via DB provider API."
+          echo "Example (Supabase): curl -X POST https://api.supabase.com/v1/projects/.../backups"
+          echo "Until this is real, prod migrations rely on the provider's"
+          echo "default daily backups. Reconsider when row counts pass 100k."
+
+      - name: Deploy (production)
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PROD }}
+        run: timeout 300 npx prisma migrate deploy
+
+      - name: Verify
+        working-directory: server
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL_PROD }}
+        run: |
+          OUT=$(npx prisma migrate status 2>&1) || true
+          echo "$OUT"
+          if ! echo "$OUT" | grep -q "Database schema is up to date"; then
+            echo "::error::Production schema is not up to date after deploy."
+            exit 1
+          fi

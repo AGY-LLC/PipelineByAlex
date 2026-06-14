@@ -1,0 +1,87 @@
+name: EAS Build (mobile)
+
+# FIND-092: least-privilege GITHUB_TOKEN. The job triggers EAS via secret;
+# it does not need write access to the repo.
+permissions:
+  contents: read
+
+on:
+  push:
+    tags:
+      - 'mobile-v*'
+  workflow_dispatch:
+    inputs:
+      profile:
+        description: 'EAS build profile'
+        required: true
+        default: 'production'
+        type: choice
+        options:
+          - production
+          - preview
+      platform:
+        description: 'Platform'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - ios
+          - android
+
+# Don't cancel an in-flight EAS build when a new tag/dispatch lands; EAS
+# builds are slow and remote-side, so the cheaper move is to queue rather
+# than abort and waste credits.
+concurrency:
+  group: eas-${{ github.event.inputs.profile || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: EAS build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # pnpm/action-setup must run before actions/setup-node so the cache
+      # plumbing (cache: pnpm) can find the pnpm binary it needs. Version
+      # is sourced from the root package.json's `packageManager` field;
+      # passing `with: version` causes ERR_PNPM_BAD_PM_VERSION.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        # cache-dependency-path is intentionally scoped to client/ — the
+        # mobile build only needs the client workspace's pnpm-lock.yaml.
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: client/pnpm-lock.yaml
+
+      - name: Setup EAS
+        uses: expo/expo-github-action@v9
+        with:
+          eas-version: ^13
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+
+      - name: Install client deps
+        working-directory: client
+        run: pnpm install --frozen-lockfile
+
+      - name: Run EAS build
+        working-directory: client
+        # Inputs are surfaced via env to keep them out of the inline shell
+        # command (defense-in-depth against injection from workflow_dispatch
+        # payloads). --no-wait lets the GH Actions runner finish quickly;
+        # the actual build runs on EAS infrastructure.
+        env:
+          PROFILE: ${{ github.event.inputs.profile || 'production' }}
+          PLATFORM: ${{ github.event.inputs.platform || 'all' }}
+        run: |
+          eas build \
+            --non-interactive \
+            --no-wait \
+            --profile "$PROFILE" \
+            --platform "$PLATFORM"
