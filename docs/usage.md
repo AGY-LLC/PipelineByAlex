@@ -67,16 +67,38 @@ default `GITHUB_TOKEN` can **only read the calling repo**, so:
 > Symptom if skipped: the **Checkout pba interpreter** step fails with a
 > 404 / permission error.
 
-## 4. Add secrets + environments (once, org-level)
+## 4. Add secrets — org vs repo vs environment
 
-- **Org secrets**: `FLY_API_TOKEN`, `VERCEL_TOKEN`, `VERCEL_ORG_ID`,
-  `VERCEL_PROJECT_ID`, `EXPO_TOKEN`.
-- **GitHub Environments** `staging` and `production`, each with `DATABASE_URL`
-  and `DIRECT_URL` secrets. The deploy job binds the environment from the plan
-  and picks these up automatically (this is why the deploy script uses
-  unprefixed `DATABASE_URL`, not `STAGING_DATABASE_URL`).
-- Attach required reviewers to `production` here if you want manual approval
-  before deploys.
+Put each secret at the narrowest scope that fits. Shared *account* tokens go at
+the org; anything unique to an app or an environment goes in the app repo.
+
+| Secret | Scope | Why |
+|---|---|---|
+| `FLY_API_TOKEN`, `VERCEL_TOKEN`, `VERCEL_ORG_ID`, `EXPO_TOKEN` | **Org** secret | one account, shared by all repos |
+| `VERCEL_PROJECT_ID` | **Repo** secret | unique per app |
+| `DATABASE_URL`, `DIRECT_URL` | **Repo → Environment** secret (`staging` / `production`) | unique per app *and* per environment |
+
+A CI-only repo (no deploy targets) needs no secrets at all.
+
+### Environments (per app repo)
+
+For each app repo that deploys:
+
+1. Repo → **Settings → Environments → New environment**. Create `staging` and
+   `production`. **The names must exactly match `target.environment` in that
+   repo's `pba.yml`** — that string is what `pba plan` emits and the deploy job
+   binds to (`environment:`).
+2. In each environment → **Environment secrets**: add `DATABASE_URL` /
+   `DIRECT_URL` with *that environment's* values. The deploy job uses unprefixed
+   names (not `STAGING_DATABASE_URL`) precisely because the environment binding
+   selects the right value.
+3. Optional on `production`: **Protection rules** → required reviewers (manual
+   approval before deploy) and "Deployment branches" limited to `main`.
+
+This works because a reusable workflow runs in the **caller repo's context**, so
+GitHub resolves the environment — its secrets *and* its approval rules — from the
+app repo. `secrets: inherit` carries org/repo secrets; the `environment:`
+binding carries the environment ones.
 
 ## 5. Onboard an app repo
 
