@@ -54,6 +54,10 @@ Bogiefile model — `pba plan` is the interpreter; see
 [`docs/runtime-interpreter-plan.md`](./docs/runtime-interpreter-plan.md) and
 [`examples/app-repo/`](./examples/app-repo/).
 
+**Onboarding / how to test once merged:** [`docs/usage.md`](./docs/usage.md) —
+merge → tag `v1` → make the central repo reachable → secrets/environments →
+add caller + `pba.yml` → watch it run (with a first-run troubleshooting table).
+
 ```bash
 pba plan [--config pba.yml] [--ref refs/heads/main]   # emit CI matrices + deploy script
 ```
