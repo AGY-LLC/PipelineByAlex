@@ -1,0 +1,64 @@
+# Reusable: gated Vercel deploy via the CLI. Because this is a real job in the
+# caller's `needs` chain, a red test BLOCKS it — unlike Vercel's git
+# integration. Disable Vercel's own auto-deploy for the branch in vercel.json:
+#   { "git": { "deploymentEnabled": { "main": false } } }
+name: deploy-vercel
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      runner:
+        type: string
+        default: "ubuntu-latest"
+      environment:
+        type: string
+        default: ""
+      prod:
+        type: boolean
+        default: true
+      health-url:
+        type: string
+        default: ""
+    secrets:
+      VERCEL_TOKEN:
+        required: true
+      VERCEL_ORG_ID:
+        required: true
+      VERCEL_PROJECT_ID:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: vercel-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install Vercel CLI
+        run: npm install --global vercel@latest
+      - name: Pull Vercel env
+        run: vercel pull --yes --environment=${{ inputs.prod && 'production' || 'preview' }} --token=$VERCEL_TOKEN
+      - name: Build
+        run: vercel build ${{ inputs.prod && '--prod' || '' }} --token=$VERCEL_TOKEN
+      - name: Deploy
+        run: vercel deploy --prebuilt ${{ inputs.prod && '--prod' || '' }} --token=$VERCEL_TOKEN
+      - name: Health probe
+        if: ${{ inputs.health-url != '' }}
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 5 --retry-delay 5 --max-time 10 "${{ inputs.health-url }}"

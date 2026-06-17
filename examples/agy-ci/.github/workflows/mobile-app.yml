@@ -1,0 +1,49 @@
+# Reusable BUNDLE for a mobile app: test → eas-build → ios-maestro.
+# Mobile build runs on the EAS release ref; iOS UI tests run on the mac runner.
+name: mobile-app
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      build-ref:
+        type: string
+        default: "refs/heads/main"
+      profile:
+        type: string
+        default: "production"
+      platform:
+        type: string
+        default: "all"
+      ios-runner:
+        type: string
+        default: '["self-hosted","macOS","ios"]'
+    secrets:
+      EXPO_TOKEN:
+        required: true
+
+jobs:
+  test:
+    uses: agy/agy-ci/.github/workflows/node-test.yml@v1
+    with:
+      working-directory: ${{ inputs.working-directory }}
+    secrets: inherit
+
+  ios-ui:
+    needs: test
+    uses: agy/agy-ci/.github/workflows/ios-maestro.yml@v1
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      runner: ${{ inputs.ios-runner }}
+
+  build:
+    needs: [test, ios-ui]
+    if: github.ref == inputs.build-ref
+    uses: agy/agy-ci/.github/workflows/eas-build.yml@v1
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      profile: ${{ inputs.profile }}
+      platform: ${{ inputs.platform }}
+    secrets: inherit

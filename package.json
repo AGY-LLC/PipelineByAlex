@@ -1,0 +1,29 @@
+{
+  "name": "pipeline-by-alex",
+  "version": "0.1.0",
+  "description": "Compile one unified pba.yml into GitHub Actions CI, testing and deploy workflows.",
+  "type": "module",
+  "packageManager": "pnpm@11.6.0",
+  "bin": {
+    "pba": "./bin/pba.mjs"
+  },
+  "scripts": {
+    "generate": "tsx src/index.ts generate",
+    "check": "tsx src/index.ts check",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx --test test/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "yaml": "^2.6.1",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

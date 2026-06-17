@@ -1,0 +1,59 @@
+# ─────────────────────────────────────────────────────────────────────────
+# GENERATED FROM pba.yml — DO NOT EDIT BY HAND.
+# Edit pba.yml and run `pba generate`. CI runs `pba check` to fail on drift.
+# ─────────────────────────────────────────────────────────────────────────
+
+name: CI
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+permissions:
+  contents: read
+jobs:
+  tool:
+    name: Tool (install + typecheck + test)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ./pnpm-lock.yaml
+      - name: Install deps
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+      - name: Typecheck
+        working-directory: .
+        run: pnpm run typecheck
+      - name: Test
+        working-directory: .
+        run: pnpm test
+  drift:
+    name: Workflow drift check (pba check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: ./pnpm-lock.yaml
+      - name: Install deps
+        working-directory: .
+        run: pnpm install --frozen-lockfile
+      - name: Workflow drift check (pba check)
+        run: pnpm check
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true

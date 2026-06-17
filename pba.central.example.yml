@@ -1,0 +1,19 @@
+# Central (caller) mode: this repo keeps NO pipeline logic. `pba generate`
+# emits a thin .github/workflows/ci.yml that delegates to a reusable workflow
+# in the central agy-ci repo. Edit the central repo to change pipeline logic;
+# edit this file only to change which bundle/inputs this repo uses.
+
+version: 1
+name: my-api
+
+ci:
+  push: [main, staging]
+  pull_request: [main, staging]
+
+central:
+  repo: agy/agy-ci # owner/repo holding the reusable workflows
+  ref: v1 # mutable major tag — pin a full version/SHA for zero blast radius
+  bundle: backend-service # → agy-ci/.github/workflows/backend-service.yml
+  with:
+    fly-app: my-api-prod
+  secrets: inherit # or a list: [FLY_API_TOKEN]

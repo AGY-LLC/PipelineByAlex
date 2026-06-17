@@ -1,0 +1,12 @@
+# Drop this in a WEB repo at .github/workflows/ci.yml.
+name: CI
+on:
+  push:         { branches: [main] }
+  pull_request: { branches: [main] }
+
+jobs:
+  pipeline:
+    uses: agy/agy-ci/.github/workflows/web-app.yml@v1
+    with:
+      health-url: https://example.com/api/health
+    secrets: inherit

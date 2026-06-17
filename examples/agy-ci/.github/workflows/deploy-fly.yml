@@ -1,0 +1,49 @@
+# Reusable: deploy a service to Fly.io + health probe. Single-purpose block.
+name: deploy-fly
+
+on:
+  workflow_call:
+    inputs:
+      app:
+        type: string
+        required: true
+      working-directory:
+        type: string
+        default: "."
+      runner:
+        type: string
+        default: "ubuntu-latest"
+      environment:
+        type: string
+        default: ""
+      health-path:
+        type: string
+        default: "/healthz"
+    secrets:
+      FLY_API_TOKEN:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ${{ inputs.runner }}
+    environment: ${{ inputs.environment }}
+    concurrency:
+      group: fly-${{ inputs.app }}
+      cancel-in-progress: false
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy
+        working-directory: ${{ inputs.working-directory }}
+        run: flyctl deploy --remote-only --app "${{ inputs.app }}"
+
+      - name: Health probe
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 10 --retry-delay 6 --max-time 10 \
+            "https://${{ inputs.app }}.fly.dev${{ inputs.health-path }}"

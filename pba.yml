@@ -1,0 +1,28 @@
+# pba's own pipeline — this repo eats its own dog food.
+# Edit this file and run `pnpm generate`; CI's drift gate runs `pnpm check`.
+version: 1
+name: pipeline-by-alex
+
+defaults:
+  runner: ubuntu-latest
+  node: 22
+
+components:
+  tool:
+    dir: .
+    language: node
+    steps: [install, typecheck, test]
+
+gates:
+  # The drift gate: regenerate workflows from pba.yml and fail if the
+  # committed files are stale. This is what keeps generated == source.
+  drift:
+    type: command
+    name: Workflow drift check (pba check)
+    setup: node
+    run: pnpm check
+
+ci:
+  push: [main]
+  pull_request: [main]
+  cancelInProgress: true

@@ -1,0 +1,13 @@
+# Drop this in a BACKEND repo at .github/workflows/ci.yml.
+# The whole per-repo footprint: own the trigger, delegate the logic.
+name: CI
+on:
+  push:         { branches: [main, staging] }
+  pull_request: { branches: [main, staging] }
+
+jobs:
+  pipeline:
+    uses: agy/agy-ci/.github/workflows/backend-service.yml@v1
+    with:
+      fly-app: my-api-prod
+    secrets: inherit

@@ -1,0 +1,55 @@
+# Reusable: EAS mobile build (iOS/Android). Single-purpose block.
+name: eas-build
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      runner:
+        type: string
+        default: "ubuntu-latest"
+      profile:
+        type: string
+        default: "production"
+      platform:
+        type: string
+        default: "all" # all | ios | android
+      wait:
+        type: boolean
+        default: false
+    secrets:
+      EXPO_TOKEN:
+        required: true
+
+jobs:
+  build:
+    runs-on: ${{ inputs.runner }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory }}/pnpm-lock.yaml
+      - name: Setup EAS
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: ^13
+          token: ${{ secrets.EXPO_TOKEN }}
+          packager: pnpm
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+      - name: EAS build
+        env:
+          PROFILE: ${{ inputs.profile }}
+          PLATFORM: ${{ inputs.platform }}
+          WAIT: ${{ inputs.wait && '--wait' || '--no-wait' }}
+        run: eas build --non-interactive $WAIT --profile "$PROFILE" --platform "$PLATFORM"

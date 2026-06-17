@@ -1,0 +1,37 @@
+# Reusable: iOS UI tests via Maestro on a macOS runner.
+# Caller passes runner: '["self-hosted","macOS","ios"]' to target your Mac;
+# default ubuntu-latest exists only so the workflow is valid when unused.
+name: ios-maestro
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      runner:
+        type: string
+        default: "ubuntu-latest"
+      simulator:
+        type: string
+        default: "iPhone 15"
+      flows:
+        type: string
+        default: ".maestro/"
+
+jobs:
+  ui-test:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Maestro
+        run: |
+          curl -Ls https://get.maestro.mobile.dev | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+      - name: Boot simulator
+        run: xcrun simctl boot "${{ inputs.simulator }}" || true
+      - name: Run Maestro flows
+        run: maestro test "${{ inputs.flows }}"

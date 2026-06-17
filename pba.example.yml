@@ -1,1 +1,105 @@
+# pba.yml — one unified pipeline config.
+#
+# Compiles into .github/workflows/ci.yml (+ eas-build.yml) via `pba generate`.
+# CI runs `pba check` to fail the build if the committed workflows drift from
+# this file. This example models a server + mobile-app + python ai-service
+# monorepo with Fly, Vercel, Prisma migrations and EAS mobile builds.
+
 version: 1
+name: nisatsu
+
+# Toolchain defaults applied to every job (overridable per component).
+defaults:
+  runner: ubuntu-latest
+  node: 24
+  pnpm: 10.12.4
+  python: "3.11"
+
+# ── components: the workspaces that get tested ─────────────────────────────
+components:
+  server:
+    dir: server
+    language: node
+    steps: [install, prisma-generate, typecheck, lint, test]
+    env:
+      test:
+        NODE_ENV: test
+        DATABASE_URL: postgresql://postgres:postgres@localhost:5432/nisatsu_test
+  app:
+    dir: app
+    language: node
+    mobile: true # this is the Expo/EAS workspace
+    steps: [install, typecheck, test]
+  ai-service:
+    dir: ai-service
+    language: python
+    docker:
+      targets: [production, test] # docker build --target … in order
+      test: test # docker run --rm <img>:test as the suite
+
+# ── gates: extra blocking checks beyond per-component ──────────────────────
+gates:
+  audit:
+    type: pnpm-audit
+    level: high
+    dirs: [server, app]
+  prisma-drift:
+    type: prisma-drift
+    dir: server
+
+# ── ci: when the quality jobs run ──────────────────────────────────────────
+ci:
+  push: [main, dev, staging]
+  pull_request: [main, dev, staging]
+  cancelInProgress: true
+
+# ── targets: deploy units defined once, referenced per branch ──────────────
+targets:
+  fly-staging:
+    type: fly
+    app: nisatsu-ai-staging
+    dir: ai-service
+    environment: staging
+  fly-prod:
+    type: fly
+    app: nisatsu-ai
+    dir: ai-service
+    environment: production
+  migrate-staging:
+    type: prisma-migrate
+    dir: server
+    environment: staging
+  migrate-prod:
+    type: prisma-migrate
+    dir: server
+    environment: production
+    health: https://nisatsu.app/api/health
+  web-prod:
+    # cli mode = CI owns the deploy, so a red test blocks it. Set
+    # vercel.json `git.deploymentEnabled.main: false` to stop Vercel's own
+    # auto-deploy and avoid double deploys.
+    type: vercel
+    mode: cli
+    dir: .
+    prod: true
+    health: https://nisatsu.app/api/health
+
+# ── deploy: per-branch ordered chains (order = the needs chain) ────────────
+deploy:
+  staging:
+    on: push
+    needs_ci: [server, app, audit, prisma-drift, ai-service]
+    order: [fly-staging, migrate-staging]
+  main:
+    on: push
+    needs_ci: [server, app, audit, prisma-drift, ai-service]
+    order: [fly-prod, migrate-prod, web-prod]
+
+# ── mobile: independent EAS release (tag + manual dispatch) ────────────────
+mobile:
+  trigger:
+    tag: mobile-v*
+    dispatch: true
+  profiles: [production, preview]
+  platforms: [all, ios, android]
+  verify: true

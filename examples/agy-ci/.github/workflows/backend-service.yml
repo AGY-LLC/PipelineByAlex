@@ -1,0 +1,39 @@
+# Reusable BUNDLE for a backend service: test → deploy-fly (gated).
+# Composes single-purpose blocks via nested reusable workflows + `needs`.
+name: backend-service
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      fly-app:
+        type: string
+        required: true
+      deploy-ref:
+        type: string
+        default: "refs/heads/main"
+      environment:
+        type: string
+        default: "production"
+    secrets:
+      FLY_API_TOKEN:
+        required: true
+
+jobs:
+  test:
+    uses: agy/agy-ci/.github/workflows/node-test.yml@v1
+    with:
+      working-directory: ${{ inputs.working-directory }}
+    secrets: inherit
+
+  deploy:
+    needs: test # ← CI must pass before the deploy can run
+    if: github.ref == inputs.deploy-ref
+    uses: agy/agy-ci/.github/workflows/deploy-fly.yml@v1
+    with:
+      app: ${{ inputs.fly-app }}
+      working-directory: ${{ inputs.working-directory }}
+      environment: ${{ inputs.environment }}
+    secrets: inherit

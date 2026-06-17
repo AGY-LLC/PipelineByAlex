@@ -1,0 +1,59 @@
+# Reusable: install + lint + typecheck + test for a Node workspace.
+# Called by web-app.yml, backend-service.yml, mobile-app.yml, or a repo caller.
+name: node-test
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      node-version:
+        type: string
+        default: "22"
+      runner:
+        type: string
+        default: "ubuntu-latest"
+      run-lint:
+        type: boolean
+        default: true
+      run-test:
+        type: boolean
+        default: true
+    secrets:
+      NPM_TOKEN:
+        required: false
+
+jobs:
+  test:
+    runs-on: ${{ inputs.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: pnpm
+          cache-dependency-path: ${{ inputs.working-directory }}/pnpm-lock.yaml
+
+      - name: Install deps
+        working-directory: ${{ inputs.working-directory }}
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        working-directory: ${{ inputs.working-directory }}
+        run: pnpm run typecheck
+
+      - name: Lint
+        if: ${{ inputs.run-lint }}
+        working-directory: ${{ inputs.working-directory }}
+        run: pnpm run lint
+
+      - name: Test
+        if: ${{ inputs.run-test }}
+        working-directory: ${{ inputs.working-directory }}
+        run: pnpm test

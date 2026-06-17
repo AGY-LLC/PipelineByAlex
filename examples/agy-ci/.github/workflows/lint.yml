@@ -1,0 +1,23 @@
+# agy-ci's OWN CI: lint every reusable workflow with actionlint before you move
+# the `v1` tag. This is the safety net that keeps a broken central change from
+# reaching the whole fleet — fix it here, then re-point v1.
+name: lint-workflows
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run actionlint
+        uses: docker://rhysd/actionlint:latest
+        with:
+          args: -color

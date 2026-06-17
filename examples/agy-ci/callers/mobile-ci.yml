@@ -1,0 +1,17 @@
+# Drop this in a MOBILE repo at .github/workflows/ci.yml.
+# A mobile-v* tag triggers the EAS production build; pushes run tests + iOS UI.
+name: CI
+on:
+  push:
+    branches: [main]
+    tags: ["mobile-v*"]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pipeline:
+    uses: agy/agy-ci/.github/workflows/mobile-app.yml@v1
+    with:
+      profile: production
+      platform: all
+    secrets: inherit
