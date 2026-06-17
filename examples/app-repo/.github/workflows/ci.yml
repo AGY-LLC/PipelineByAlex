@@ -1,0 +1,16 @@
+# The ENTIRE per-repo CI footprint. Commit this + a pba.yml; that's it.
+# GitHub runs this on the triggers below; it calls the central pipeline, which
+# reads this repo's pba.yml at runtime. No local generation, ever.
+name: CI
+
+on:
+  push:
+    branches: [main, staging]
+    tags: ["mobile-v*"]
+  pull_request:
+    branches: [main, staging]
+
+jobs:
+  ci:
+    uses: AGY-LLC/pipelinebyalex/.github/workflows/pipeline.yml@v1
+    secrets: inherit

@@ -1,2 +1,5 @@
+# Approve esbuild's install/build script (pulled in transitively by tsx).
+# Without this, pnpm 10+ reports ERR_PNPM_IGNORED_BUILDS and `pnpm install`
+# exits non-zero in CI (CI=true makes ignored builds a hard error).
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true

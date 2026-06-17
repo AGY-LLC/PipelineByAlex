@@ -1,0 +1,17 @@
+# Dogfood: run the central pipeline against THIS repo's own pba.yml.
+# Same-repo reusable call (`uses: ./…`) + pba_ref pinned to the current commit,
+# so it needs no secrets and no cross-repo access — a real end-to-end smoke test
+# of the interpreter (plan -> test -> gates) on GitHub.
+name: selftest
+
+on:
+  push:
+    branches: [feat/pba-pipeline-interpreter]
+  workflow_dispatch:
+
+jobs:
+  ci:
+    uses: ./.github/workflows/pipeline.yml
+    with:
+      pba_ref: ${{ github.sha }}
+    secrets: inherit
