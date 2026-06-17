@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { hasErrors, type ValidationIssue } from "./schema.js";
 import { generateFiles, loadConfig } from "./generate.js";
+import { buildPlan } from "./plan.js";
 
 // ---------------------------------------------------------------------------
 // pba CLI
@@ -12,16 +13,38 @@ import { generateFiles, loadConfig } from "./generate.js";
 interface Args {
   config: string;
   out: string;
+  ref: string;
 }
 
 function parseArgs(argv: string[]): Args {
-  const args: Args = { config: "pba.yml", out: "." };
+  const args: Args = {
+    config: "pba.yml",
+    out: ".",
+    ref: process.env.GITHUB_REF ?? "",
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if ((a === "--config" || a === "-c") && argv[i + 1]) args.config = argv[++i]!;
     else if ((a === "--out" || a === "-o") && argv[i + 1]) args.out = argv[++i]!;
+    else if ((a === "--ref" || a === "-r") && argv[i + 1]) args.ref = argv[++i]!;
   }
   return args;
+}
+
+/** Emit key/value pairs to $GITHUB_OUTPUT (heredoc for multiline) or stdout. */
+function writeOutputs(outputs: Record<string, string>): void {
+  let buf = "";
+  for (const [k, v] of Object.entries(outputs)) {
+    if (v.includes("\n")) {
+      const delim = `__PBA_${k.toUpperCase()}_EOF__`;
+      buf += `${k}<<${delim}\n${v}\n${delim}\n`;
+    } else {
+      buf += `${k}=${v}\n`;
+    }
+  }
+  const gh = process.env.GITHUB_OUTPUT;
+  if (gh) appendFileSync(gh, buf);
+  else process.stdout.write(buf);
 }
 
 function printIssues(issues: ValidationIssue[]): void {
@@ -74,6 +97,18 @@ function cmdCheck(args: Args): void {
   process.stdout.write(`pba: ${files.size} workflow file(s) up to date.\n`);
 }
 
+function cmdPlan(args: Args): void {
+  const config = load(args.config);
+  const plan = buildPlan(config, args.ref);
+  writeOutputs({
+    components: JSON.stringify(plan.components),
+    gates: JSON.stringify(plan.gates),
+    deploy_enabled: String(plan.deploy.enabled),
+    deploy_environment: plan.deploy.environment,
+    deploy_script: plan.deploy.script,
+  });
+}
+
 function main(): void {
   const [cmd, ...rest] = process.argv.slice(2);
   const args = parseArgs(rest);
@@ -85,14 +120,18 @@ function main(): void {
     case "check":
       cmdCheck(args);
       break;
+    case "plan":
+      cmdPlan(args);
+      break;
     default:
       process.stdout.write(
         [
           "pba — compile pba.yml into GitHub Actions workflows",
           "",
           "Usage:",
-          "  pba generate [--config pba.yml] [--out .]   write workflow files",
-          "  pba check    [--config pba.yml] [--out .]   fail if files are stale (CI drift gate)",
+          "  pba plan     [--config pba.yml] [--ref <git-ref>]   emit CI matrices + deploy script (runtime interpreter)",
+          "  pba generate [--config pba.yml] [--out .]           write workflow files (standalone mode)",
+          "  pba check    [--config pba.yml] [--out .]           fail if files are stale (drift gate)",
           "",
         ].join("\n"),
       );

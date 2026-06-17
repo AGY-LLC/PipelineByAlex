@@ -44,9 +44,21 @@ first gated on `needs_ci`. A single red CI/test/gate job blocks the whole chain.
 See [`pba.example.yml`](./pba.example.yml) for a full monorepo example (server +
 mobile app + python ai-service, Fly + Vercel + Prisma migrations + EAS).
 
-## Two modes
+## Modes
 
-**Standalone** (default): `pba` emits full `ci.yml` (+ `eas-build.yml`) with all
+**Central / runtime-interpreted (recommended)**: app repos commit a declarative
+`pba.yml` + a ~10-line caller; the central reusable workflow
+(`.github/workflows/pipeline.yml`) reads the app's `pba.yml` **at runtime** and
+runs CI + deploy from it. Nobody generates anything locally. This is the
+Bogiefile model — `pba plan` is the interpreter; see
+[`docs/runtime-interpreter-plan.md`](./docs/runtime-interpreter-plan.md) and
+[`examples/app-repo/`](./examples/app-repo/).
+
+```bash
+pba plan [--config pba.yml] [--ref refs/heads/main]   # emit CI matrices + deploy script
+```
+
+**Standalone**: `pba` emits full `ci.yml` (+ `eas-build.yml`) with all
 jobs inline. Use when a repo owns its own pipeline.
 
 **Central** (add a `central:` block): `pba` emits only a ~10-line *caller* that

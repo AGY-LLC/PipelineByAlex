@@ -1,0 +1,58 @@
+# The declarative pipeline for THIS app repo — the "Bogiefile".
+# Committed alongside the tiny caller; read at runtime by the central pipeline.
+version: 1
+name: nisatsu
+
+defaults:
+  node: 24
+  pnpm: 10.12.4
+  python: "3.11"
+
+components:
+  server:
+    dir: server
+    language: node
+    steps: [install, prisma-generate, typecheck, lint, test]
+    env:
+      test:
+        NODE_ENV: test
+        DATABASE_URL: postgresql://postgres:postgres@localhost:5432/app_test
+  app:
+    dir: app
+    language: node
+    mobile: true
+    steps: [install, typecheck, test]
+  ai-service:
+    dir: ai-service
+    language: python
+    docker:
+      targets: [production, test]
+      test: test
+
+gates:
+  audit:
+    type: pnpm-audit
+    level: high
+    dirs: [server, app]
+  prisma-drift:
+    type: prisma-drift
+    dir: server
+
+ci:
+  push: [main, staging]
+  pull_request: [main, staging]
+
+targets:
+  fly-staging: { type: fly, app: nisatsu-ai-staging, dir: ai-service, environment: staging }
+  fly-prod: { type: fly, app: nisatsu-ai, dir: ai-service, environment: production }
+  migrate-staging: { type: prisma-migrate, dir: server, environment: staging }
+  migrate-prod: { type: prisma-migrate, dir: server, environment: production, health: "https://nisatsu.app/api/health" }
+  web-prod: { type: vercel, mode: cli, dir: ".", prod: true, health: "https://nisatsu.app/api/health" }
+
+deploy:
+  staging:
+    needs_ci: [server, app, audit, prisma-drift, ai-service]
+    order: [fly-staging, migrate-staging]
+  main:
+    needs_ci: [server, app, audit, prisma-drift, ai-service]
+    order: [fly-prod, migrate-prod, web-prod]

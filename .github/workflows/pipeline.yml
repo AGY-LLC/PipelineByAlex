@@ -1,0 +1,175 @@
+# pipelinebyalex — central reusable pipeline.
+#
+# App repos call this with a tiny caller and commit a declarative `pba.yml`.
+# This workflow checks out the caller repo, reads its pba.yml at runtime via the
+# `pba` tool, and fans out CI + deploy from it. Nobody generates anything
+# locally. See docs/runtime-interpreter-plan.md.
+name: pba pipeline
+
+on:
+  workflow_call:
+    inputs:
+      pba_ref:
+        description: Which pipelinebyalex ref the interpreter runs from.
+        type: string
+        default: v1
+      config:
+        description: Path to the declarative config in the caller repo.
+        type: string
+        default: pba.yml
+    # Secrets are passed by the caller via `secrets: inherit`; with inherit a
+    # called workflow can reference any inherited secret without declaring it.
+
+permissions:
+  contents: read
+
+jobs:
+  # ── plan: run the interpreter once, emit matrices + deploy script ─────────
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      components: ${{ steps.p.outputs.components }}
+      gates: ${{ steps.p.outputs.gates }}
+      deploy_enabled: ${{ steps.p.outputs.deploy_enabled }}
+      deploy_environment: ${{ steps.p.outputs.deploy_environment }}
+      deploy_script: ${{ steps.p.outputs.deploy_script }}
+    steps:
+      - name: Checkout app repo (has pba.yml)
+        uses: actions/checkout@v4
+
+      - name: Checkout pba interpreter
+        uses: actions/checkout@v4
+        with:
+          repository: AGY-LLC/pipelinebyalex
+          ref: ${{ inputs.pba_ref }}
+          path: .pba-tool
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install interpreter
+        working-directory: .pba-tool
+        run: pnpm install --frozen-lockfile
+
+      - name: Plan
+        id: p
+        run: node .pba-tool/bin/pba.mjs plan --config "${{ inputs.config }}" --ref "$GITHUB_REF"
+
+  # ── test: one job per component, fanned out from the plan ────────────────
+  test:
+    needs: plan
+    if: ${{ needs.plan.outputs.components != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        component: ${{ fromJSON(needs.plan.outputs.components) }}
+    runs-on: ${{ matrix.component.runner }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: app_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres" --health-interval=10s
+          --health-timeout=5s --health-retries=5
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/app_test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        if: ${{ matrix.component.setup == 'node' }}
+        uses: pnpm/action-setup@v4
+      - name: Setup Node
+        if: ${{ matrix.component.setup == 'node' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.component.node }}
+          cache: pnpm
+          cache-dependency-path: ${{ matrix.component.cache_path }}
+      - name: Setup Python
+        if: ${{ matrix.component.setup == 'python' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.component.python }}
+      - name: Run ${{ matrix.component.id }}
+        run: ${{ matrix.component.script }}
+
+  # ── gates: one job per gate, fanned out from the plan ────────────────────
+  gates:
+    needs: plan
+    if: ${{ needs.plan.outputs.gates != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        gate: ${{ fromJSON(needs.plan.outputs.gates) }}
+    runs-on: ${{ matrix.gate.runner }}
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: shadow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres" --health-interval=10s
+          --health-timeout=5s --health-retries=5
+    env:
+      SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shadow
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        if: ${{ matrix.gate.setup == 'node' }}
+        uses: pnpm/action-setup@v4
+      - name: Setup Node
+        if: ${{ matrix.gate.setup == 'node' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.gate.node }}
+          cache: pnpm
+          cache-dependency-path: ${{ matrix.gate.cache_path }}
+      - name: Setup Python
+        if: ${{ matrix.gate.setup == 'python' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.gate.python }}
+      - name: Run ${{ matrix.gate.id }}
+        run: ${{ matrix.gate.script }}
+
+  # ── deploy: ordered chain for the ref, gated on test + gates ─────────────
+  deploy:
+    needs: [plan, test, gates]
+    # Wait for CI; run only if the ref deploys AND nothing failed. A red test
+    # or gate (failure) blocks the deploy; skipped (no components/gates) does not.
+    if: >-
+      ${{ always() && needs.plan.outputs.deploy_enabled == 'true'
+          && needs.test.result != 'failure' && needs.gates.result != 'failure' }}
+    runs-on: ubuntu-latest
+    environment: ${{ needs.plan.outputs.deploy_environment }}
+    concurrency:
+      group: deploy-${{ github.repository }}-${{ github.ref }}
+      cancel-in-progress: false
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      # DATABASE_URL / DIRECT_URL come from the bound Environment's secrets.
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Deploy
+        run: ${{ needs.plan.outputs.deploy_script }}

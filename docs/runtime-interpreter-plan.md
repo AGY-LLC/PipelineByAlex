@@ -1,9 +1,10 @@
 # Plan: `pba.yml` as a runtime-interpreted Bogiefile
 
-> Status: **design / not built yet.** This captures the agreed architecture so we
-> can implement it later. The current code in `src/` only does local
-> generation (`pba generate` / `pba check`); the model below replaces that as
-> the primary flow.
+> Status: **BUILT.** `pba plan` (`src/plan.ts`), the central reusable workflow
+> (`.github/workflows/pipeline.yml`), and the app-repo caller
+> (`examples/app-repo/`) are implemented and tested (`test/plan.test.ts`). The
+> standalone generator (`pba generate` / `pba check`) is kept as an escape
+> hatch. The sketch below is the as-built design.
 
 ## Goal
 
@@ -247,18 +248,18 @@ Plus the app repo's real `pba.yml` (components/gates/ci/targets/deploy as today)
 
 ## Implementation checklist
 
-- [ ] `src/plan.ts`: build the plan object (components, gates, deploy) from a
+- [x] `src/plan.ts`: build the plan object (components, gates, deploy) from a
       `Config` + `ref`; shell-script builders per component/gate/target.
-- [ ] `writeOutput()` helper (GITHUB_OUTPUT heredoc vs stdout).
-- [ ] `src/index.ts`: add `plan` command (`--ref`, `--config`).
-- [ ] Switch deploy DB env to unprefixed `DATABASE_URL`/`DIRECT_URL`.
-- [ ] `.github/workflows/pipeline.yml`: the reusable workflow above.
-- [ ] `examples/callers/app-ci.yml`: the tiny caller.
-- [ ] Tests for `pba plan` output shape (valid JSON, correct scripts, deploy
-      gating by ref).
-- [ ] Decide fate of `pba generate`/`check`: keep as an optional standalone
-      escape hatch, or remove once the interpreter is the default.
+- [x] `writeOutput()` helper (GITHUB_OUTPUT heredoc vs stdout) — in `src/index.ts`.
+- [x] `src/index.ts`: add `plan` command (`--ref`, `--config`).
+- [x] Deploy DB env is unprefixed `DATABASE_URL`/`DIRECT_URL` (Environment secrets).
+- [x] `.github/workflows/pipeline.yml`: the reusable workflow above.
+- [x] `examples/app-repo/`: the tiny caller + an example `pba.yml`.
+- [x] Tests for `pba plan` output shape (`test/plan.test.ts`).
+- [x] Kept `pba generate`/`check` as the optional standalone escape hatch.
 - [ ] Publish `pba` to npm (optional) to drop the in-workflow checkout+install.
+- [ ] Tag `v1` on this repo so callers' `@v1` resolves.
+- [ ] Real end-to-end run on GitHub (can't be exercised locally).
 
 ## Relationship to current code
 
