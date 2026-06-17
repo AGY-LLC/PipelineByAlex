@@ -43,6 +43,11 @@ jobs:
           repository: AGY-LLC/pipelinebyalex
           ref: ${{ inputs.pba_ref }}
           path: .pba-tool
+          # Public central repo / same-repo self-test: github.token works.
+          # Private central repo: set an org secret PBA_READ_TOKEN (a PAT or App
+          # token with Contents:read) and it's used instead — define once at the
+          # org, never per repo.
+          token: ${{ secrets.PBA_READ_TOKEN || github.token }}
 
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
