@@ -60,7 +60,14 @@ jobs:
 
       - name: Plan
         id: p
-        run: node .pba-tool/bin/pba.mjs plan --config "${{ inputs.config }}" --ref "$GITHUB_REF"
+        # event + base-ref let the interpreter decide which gates apply (e.g. a
+        # PR-only append-only check, or a preflight scoped to PRs into staging).
+        run: >-
+          node .pba-tool/bin/pba.mjs plan
+          --config "${{ inputs.config }}"
+          --ref "$GITHUB_REF"
+          --event "${{ github.event_name }}"
+          --base-ref "${{ github.base_ref }}"
 
   # ── test: one job per component, fanned out from the plan ────────────────
   test:
@@ -114,6 +121,9 @@ jobs:
       matrix:
         gate: ${{ fromJSON(needs.plan.outputs.gates) }}
     runs-on: ${{ matrix.gate.runner }}
+    # A gate may bind a GitHub Environment (e.g. a live staging-DB preflight) to
+    # read that environment's secrets / honor its rules. Empty string = none.
+    environment: ${{ matrix.gate.environment }}
     services:
       postgres:
         image: postgres:16
@@ -128,8 +138,17 @@ jobs:
           --health-timeout=5s --health-retries=5
     env:
       SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shadow
+      # DATABASE_URL / DIRECT_URL resolve from the bound Environment when a gate
+      # sets `environment` (else empty). BASE_REF is the PR target branch, used
+      # by append-only / merge-base checks.
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      BASE_REF: ${{ github.base_ref }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # 0 = full history (merge-base / append-only diffs); 1 = shallow.
+          fetch-depth: ${{ matrix.gate.fetch_depth }}
       - name: Setup pnpm
         if: ${{ matrix.gate.setup == 'node' }}
         uses: pnpm/action-setup@v4
@@ -161,6 +180,20 @@ jobs:
     concurrency:
       group: deploy-${{ github.repository }}-${{ github.ref }}
       cancel-in-progress: false
+    # Shadow DB lets a prisma-migrate target with `render_sql` replay migrations
+    # to print the pending SQL before applying. Unused by other targets.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: shadow
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U postgres" --health-interval=10s
+          --health-timeout=5s --health-retries=5
     env:
       FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
@@ -170,6 +203,7 @@ jobs:
       # DATABASE_URL / DIRECT_URL come from the bound Environment's secrets.
       DATABASE_URL: ${{ secrets.DATABASE_URL }}
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shadow
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

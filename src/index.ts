@@ -14,6 +14,9 @@ interface Args {
   config: string;
   out: string;
   ref: string;
+  event: string;
+  baseRef: string;
+  suite: string;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -21,12 +24,18 @@ function parseArgs(argv: string[]): Args {
     config: "pba.yml",
     out: ".",
     ref: process.env.GITHUB_REF ?? "",
+    event: process.env.GITHUB_EVENT_NAME ?? "",
+    baseRef: process.env.GITHUB_BASE_REF ?? "",
+    suite: "",
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if ((a === "--config" || a === "-c") && argv[i + 1]) args.config = argv[++i]!;
     else if ((a === "--out" || a === "-o") && argv[i + 1]) args.out = argv[++i]!;
     else if ((a === "--ref" || a === "-r") && argv[i + 1]) args.ref = argv[++i]!;
+    else if ((a === "--event" || a === "-e") && argv[i + 1]) args.event = argv[++i]!;
+    else if ((a === "--base-ref" || a === "-b") && argv[i + 1]) args.baseRef = argv[++i]!;
+    else if ((a === "--suite" || a === "-s") && argv[i + 1]) args.suite = argv[++i]!;
   }
   return args;
 }
@@ -99,10 +108,15 @@ function cmdCheck(args: Args): void {
 
 function cmdPlan(args: Args): void {
   const config = load(args.config);
-  const plan = buildPlan(config, args.ref);
+  const plan = buildPlan(config, args.ref, {
+    event: args.event || undefined,
+    baseRef: args.baseRef || undefined,
+    suite: args.suite || undefined,
+  });
   writeOutputs({
     components: JSON.stringify(plan.components),
     gates: JSON.stringify(plan.gates),
+    smoke: JSON.stringify(plan.smoke),
     deploy_enabled: String(plan.deploy.enabled),
     deploy_environment: plan.deploy.environment,
     deploy_script: plan.deploy.script,
@@ -129,7 +143,7 @@ function main(): void {
           "pba — compile pba.yml into GitHub Actions workflows",
           "",
           "Usage:",
-          "  pba plan     [--config pba.yml] [--ref <git-ref>]   emit CI matrices + deploy script (runtime interpreter)",
+          "  pba plan     [--config pba.yml] [--ref <git-ref>] [--event <name>] [--base-ref <branch>]   emit CI matrices + deploy script (runtime interpreter)",
           "  pba generate [--config pba.yml] [--out .]           write workflow files (standalone mode)",
           "  pba check    [--config pba.yml] [--out .]           fail if files are stale (drift gate)",
           "",

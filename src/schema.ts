@@ -111,7 +111,25 @@ export const gateSchema = z.discriminatedUnion("type", [
       // What toolchain to set up before running. `node` also installs deps.
       setup: z.enum(["node", "python", "none"]).default("none"),
       install: z.boolean().default(true),
+      // Extra workspace dirs to `pnpm install` before running (node only).
+      // Use when a check spans multiple workspaces — e.g. a license manifest
+      // generated from BOTH server and app dependency closures. When set, this
+      // replaces the single-dir `install` behavior.
+      installs: z.array(z.string()).optional(),
       run: z.string().min(1),
+      // Restrict which events run this gate. Omit = both push and pull_request.
+      // e.g. an append-only / merge-base check only makes sense on PRs.
+      on: z.array(z.enum(["push", "pull_request"])).optional(),
+      // Restrict to PRs whose base branch is one of these. Implies the gate is
+      // pull_request-only (a live-DB preflight before merging into `staging`).
+      base: z.array(branchName).optional(),
+      // Check out full git history (fetch-depth: 0) — needed for merge-base /
+      // append-only diffs against the PR base branch (exposed as $BASE_REF).
+      full_history: z.boolean().default(false),
+      // Bind a GitHub Environment so the gate can read that environment's
+      // secrets (e.g. a live staging-DB preflight needs the staging
+      // DATABASE_URL/DIRECT_URL) and respects its protection rules.
+      environment: z.string().optional(),
     })
     .strict(),
 ]);
@@ -187,6 +205,10 @@ const prismaMigrateTarget = z
     type: z.literal("prisma-migrate"),
     dir: z.string().min(1),
     environment: z.string().optional(),
+    // Before applying, render the pending migration SQL (`migrate diff`) to the
+    // job log for review. Needs a shadow DB to replay migrations against — the
+    // deploy job provides one (SHADOW_DATABASE_URL).
+    render_sql: z.boolean().default(false),
     // Post-migrate health probe URL (absolute).
     health: z.string().optional(),
   })
@@ -225,6 +247,32 @@ export const deployBranchSchema = z
   })
   .strict();
 
+// ---- smoke (manual, self-hosted staging e2e suites) -----------------------
+// Smoke suites run on demand (the app's thin smoke caller is workflow_dispatch)
+// against a deployed environment — typically on a self-hosted runner (a macOS
+// box with simulators for a Maestro device suite). Because the trigger is
+// manual, committing this stays inert until a runner is online and someone
+// dispatches it. Secret-backed env (TEST_PHONE, STAGING_API_URL, …) is
+// forwarded by the central smoke workflow's secret passthrough; `env` here is
+// for literal (non-secret) values exported before the run.
+export const smokeSuiteSchema = z
+  .object({
+    // Runner labels. Self-hosted by default — a deployed-app device suite needs
+    // a real machine (simulator/emulator), not a GitHub-hosted runner.
+    runner: z.union([z.string(), z.array(z.string())]).default(["self-hosted"]),
+    dir: z.string().default("."),
+    // Toolchain to set up before the run. `node` also installs deps in `dir`.
+    setup: z.enum(["node", "python", "none"]).default("none"),
+    install: z.boolean().default(false),
+    run: z.string().min(1),
+    // Literal (non-secret) env exported before the run.
+    env: envMap.optional(),
+    // GitHub Environment to bind (reviewers / env-scoped secrets like the
+    // staging DATABASE_URL). Usually the deployed env under test, e.g. staging.
+    environment: z.string().optional(),
+  })
+  .strict();
+
 // ---- mobile (independent EAS release workflow) ----------------------------
 
 export const mobileSchema = z
@@ -256,6 +304,7 @@ export const configSchema = z
     ci: ciSchema,
     targets: z.record(z.string(), targetSchema).default({}),
     deploy: z.record(branchName, deployBranchSchema).default({}),
+    smoke: z.record(z.string(), smokeSuiteSchema).default({}),
     mobile: mobileSchema.optional(),
     central: centralSchema.optional(),
   })
@@ -269,6 +318,7 @@ export type Target = z.infer<typeof targetSchema>;
 export type DeployBranch = z.infer<typeof deployBranchSchema>;
 export type Mobile = z.infer<typeof mobileSchema>;
 export type Central = z.infer<typeof centralSchema>;
+export type SmokeSuite = z.infer<typeof smokeSuiteSchema>;
 export type ComponentStep = z.infer<typeof componentStep>;
 
 // Default step lists per language when `steps` is omitted.

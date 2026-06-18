@@ -116,11 +116,13 @@ function gateJob(id: string, gate: Gate, config: Config): Job {
   }
 
   if (gate.type === "command") {
-    const steps: Step[] = [checkoutStep()];
+    const steps: Step[] = [checkoutStep(gate.full_history ? { fetchDepth: 0 } : undefined)];
     if (gate.setup === "node") {
       steps.push(...setupNodeSteps(gate.dir, config.defaults));
-      if (gate.install) {
-        steps.push(runStep("Install deps", "pnpm install --frozen-lockfile", { dir: gate.dir }));
+      // Explicit `installs` list (multi-workspace) wins over single gate.dir.
+      const dirs = gate.installs ?? (gate.install ? [gate.dir] : []);
+      for (const dir of dirs) {
+        steps.push(runStep(`Install deps (${dir})`, "pnpm install --frozen-lockfile", { dir }));
       }
     } else if (gate.setup === "python") {
       steps.push(setupPythonStep(config.defaults.python));
@@ -133,11 +135,26 @@ function gateJob(id: string, gate: Gate, config: Config): Job {
       }
     }
     steps.push(runStep(gate.name ?? id, gate.run, { dir: gate.dir === "." ? undefined : gate.dir }));
-    return {
+    const job: Job = {
       name: gate.name ?? id,
       "runs-on": config.defaults.runner,
       steps,
     };
+    const cond = commandGateCondition(gate);
+    if (cond) job.if = cond;
+    if (gate.environment) job.environment = gate.environment;
+    // An env-bound gate reads the bound environment's DB secrets; a full-history
+    // gate needs the PR base branch. Surface both as env when relevant.
+    const env: Record<string, string> = {};
+    if (gate.environment) {
+      env.DATABASE_URL = "${{ secrets.DATABASE_URL }}";
+      env.DIRECT_URL = "${{ secrets.DIRECT_URL }}";
+    }
+    if (gate.full_history || (gate.base && gate.base.length)) {
+      env.BASE_REF = "${{ github.base_ref }}";
+    }
+    if (Object.keys(env).length) job.env = env;
+    return job;
   }
 
   // prisma-drift: shadow postgres + drift-check script.
@@ -195,6 +212,20 @@ export function buildCiWorkflow(config: Config): Workflow {
     workflow.concurrency = { group: "ci-${{ github.ref }}", "cancel-in-progress": true };
   }
   return workflow;
+}
+
+// A command gate may be scoped to PRs (optionally by base branch) or to a
+// single event via `on`. Mirrors the runtime interpreter's gateApplies filter.
+function commandGateCondition(
+  gate: Extract<Gate, { type: "command" }>,
+): string | undefined {
+  if (gate.base && gate.base.length) {
+    const bases = gate.base.map((b) => `github.base_ref == '${b}'`).join(" || ");
+    return `github.event_name == 'pull_request' && (${bases})`;
+  }
+  const on = gate.on ?? ["push", "pull_request"];
+  if (on.length === 1) return `github.event_name == '${on[0]}'`;
+  return undefined;
 }
 
 function imageTag(dir: string, target: string): string {

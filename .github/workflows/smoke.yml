@@ -1,0 +1,106 @@
+# pipelinebyalex — central reusable SMOKE workflow.
+#
+# Manual / on-demand staging e2e suites that run against a DEPLOYED environment,
+# typically on a self-hosted runner (a macOS box with simulators for a Maestro
+# device suite). App repos add a tiny workflow_dispatch caller and declare the
+# suites under `smoke:` in pba.yml. Because the trigger is manual, a repo can
+# commit this before any runner exists — it stays inert until dispatched.
+name: pba smoke
+
+on:
+  workflow_call:
+    inputs:
+      pba_ref:
+        description: Which pipelinebyalex ref the interpreter runs from.
+        type: string
+        default: v1
+      config:
+        description: Path to the declarative config in the caller repo.
+        type: string
+        default: pba.yml
+      suite:
+        description: Run only this smoke suite by name (empty = all suites).
+        type: string
+        default: ""
+    # Secrets arrive via the caller's `secrets: inherit`. The smoke job forwards
+    # a conventional set below; name your secrets to match (or extend this list).
+
+permissions:
+  contents: read
+
+jobs:
+  # ── plan: interpret pba.yml → smoke matrix ───────────────────────────────
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      smoke: ${{ steps.p.outputs.smoke }}
+    steps:
+      - name: Checkout app repo (has pba.yml)
+        uses: actions/checkout@v4
+
+      - name: Checkout pba interpreter
+        uses: actions/checkout@v4
+        with:
+          repository: AGY-LLC/pipelinebyalex
+          ref: ${{ inputs.pba_ref }}
+          path: .pba-tool
+          token: ${{ secrets.PBA_READ_TOKEN || github.token }}
+
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install interpreter
+        working-directory: .pba-tool
+        run: pnpm install --frozen-lockfile
+
+      - name: Plan smoke
+        id: p
+        run: >-
+          node .pba-tool/bin/pba.mjs plan
+          --config "${{ inputs.config }}"
+          --suite "${{ inputs.suite }}"
+
+  # ── smoke: one job per suite, on its (self-hosted) runner ────────────────
+  smoke:
+    needs: plan
+    if: ${{ needs.plan.outputs.smoke != '[]' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: ${{ fromJSON(needs.plan.outputs.smoke) }}
+    runs-on: ${{ matrix.suite.runner }}
+    # Bind a deployed environment (its secrets / reviewers) when the suite asks.
+    environment: ${{ matrix.suite.environment }}
+    # Conventional secret passthrough for staging e2e / device suites. An unset
+    # secret resolves to empty (harmless). Name app secrets to match these, or
+    # extend this block for a new credential.
+    env:
+      STAGING_API_URL: ${{ secrets.STAGING_API_URL }}
+      STAGING_APP_URL: ${{ secrets.STAGING_APP_URL }}
+      PRODUCTION_APP_URL: ${{ secrets.PRODUCTION_APP_URL }}
+      TEST_PHONE: ${{ secrets.TEST_PHONE }}
+      TEST_OTP: ${{ secrets.TEST_OTP }}
+      DATABASE_URL: ${{ secrets.DATABASE_URL }}
+      DIRECT_URL: ${{ secrets.DIRECT_URL }}
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup pnpm
+        if: ${{ matrix.suite.setup == 'node' }}
+        uses: pnpm/action-setup@v4
+      - name: Setup Node
+        if: ${{ matrix.suite.setup == 'node' }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.suite.node }}
+          cache: pnpm
+          cache-dependency-path: ${{ matrix.suite.cache_path }}
+      - name: Setup Python
+        if: ${{ matrix.suite.setup == 'python' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.suite.python }}
+      - name: Run ${{ matrix.suite.id }}
+        run: ${{ matrix.suite.script }}

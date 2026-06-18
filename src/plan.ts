@@ -1,4 +1,4 @@
-import type { Component, Config, Gate, Target } from "./schema.js";
+import type { Component, Config, Gate, SmokeSuite, Target } from "./schema.js";
 
 // ---------------------------------------------------------------------------
 // `pba plan` — the runtime interpreter.
@@ -18,7 +18,20 @@ export interface MatrixEntry {
   runner: string | string[];
   cache_path: string;
   needs_db: boolean;
+  // Git checkout depth for this job's checkout. 0 = full history (needed for
+  // merge-base / append-only diffs); 1 = shallow (the default).
+  fetch_depth: number;
+  // GitHub Environment to bind for this job ("" = none). An env-bound gate can
+  // read that environment's secrets (e.g. a live-DB preflight).
+  environment: string;
   script: string;
+}
+
+// Context about the triggering event, used to decide which gates apply.
+export interface PlanOptions {
+  event?: string; // github.event_name: "push" | "pull_request" | ...
+  baseRef?: string; // github.base_ref: the PR's target branch (PRs only)
+  suite?: string; // run only this smoke suite (empty = all)
 }
 
 export interface DeployPlan {
@@ -30,6 +43,7 @@ export interface DeployPlan {
 export interface Plan {
   components: MatrixEntry[];
   gates: MatrixEntry[];
+  smoke: MatrixEntry[];
   deploy: DeployPlan;
 }
 
@@ -106,6 +120,9 @@ function componentEntry(id: string, comp: Component, config: Config): MatrixEntr
   const python = comp.python ?? config.defaults.python;
   const needs_db = !!comp.services?.postgres;
 
+  // Components always check out shallow and bind no environment.
+  const common = { fetch_depth: 1, environment: "" };
+
   if (comp.language === "node") {
     return {
       id,
@@ -115,6 +132,7 @@ function componentEntry(id: string, comp: Component, config: Config): MatrixEntr
       runner,
       cache_path: `${comp.dir}/pnpm-lock.yaml`,
       needs_db,
+      ...common,
       script: nodeComponentScript(comp),
     };
   }
@@ -128,6 +146,7 @@ function componentEntry(id: string, comp: Component, config: Config): MatrixEntr
       runner,
       cache_path: "",
       needs_db,
+      ...common,
       script: pythonDockerScript(comp),
     };
   }
@@ -139,6 +158,7 @@ function componentEntry(id: string, comp: Component, config: Config): MatrixEntr
     runner,
     cache_path: "",
     needs_db,
+    ...common,
     script: pythonPlainScript(comp),
   };
 }
@@ -149,6 +169,9 @@ function gateEntry(id: string, gate: Gate, config: Config): MatrixEntry {
   const runner = config.defaults.runner;
   const node = String(config.defaults.node);
   const python = config.defaults.python;
+
+  // Defaults shared by the typed gates (audit / drift): shallow, no env.
+  const common = { fetch_depth: 1, environment: "" };
 
   if (gate.type === "pnpm-audit") {
     const blocks = gate.dirs.map((dir) =>
@@ -169,6 +192,7 @@ function gateEntry(id: string, gate: Gate, config: Config): MatrixEntry {
       runner,
       cache_path: `${gate.dirs[0]}/pnpm-lock.yaml`,
       needs_db: false,
+      ...common,
       script: [SH, ...blocks].join("\n"),
     };
   }
@@ -182,6 +206,7 @@ function gateEntry(id: string, gate: Gate, config: Config): MatrixEntry {
       runner,
       cache_path: `${gate.dir}/pnpm-lock.yaml`,
       needs_db: true,
+      ...common,
       script: [SH, cd(gate.dir), "pnpm install --frozen-lockfile", "pnpm run db:migrate:drift-check"].join(
         "\n",
       ),
@@ -190,11 +215,20 @@ function gateEntry(id: string, gate: Gate, config: Config): MatrixEntry {
 
   // command gate
   const lines = [SH];
-  if (gate.dir !== ".") lines.push(cd(gate.dir));
-  if (gate.install && gate.setup === "node") lines.push("pnpm install --frozen-lockfile");
-  if (gate.install && gate.setup === "python")
-    lines.push("python -m pip install --upgrade pip", "pip install -e '.[dev]'");
-  lines.push(gate.run);
+  // Node installs: explicit `installs` list (multi-workspace) wins; otherwise
+  // the single gate.dir when install is on. Each in a subshell so cwd is local.
+  if (gate.setup === "node") {
+    const dirs = gate.installs ?? (gate.install ? [gate.dir] : []);
+    for (const d of dirs) lines.push(`( ${cd(d)} && pnpm install --frozen-lockfile )`);
+  }
+  // The check itself runs in gate.dir; python deps install there too.
+  const inner: string[] = [];
+  if (gate.dir !== ".") inner.push(cd(gate.dir));
+  if (gate.setup === "python" && gate.install) {
+    inner.push("python -m pip install --upgrade pip", "pip install -e '.[dev]'");
+  }
+  inner.push(gate.run);
+  lines.push(inner.length > 1 ? `( ${inner.join(" && ")} )` : inner[0]!);
   return {
     id,
     setup: gate.setup,
@@ -203,6 +237,41 @@ function gateEntry(id: string, gate: Gate, config: Config): MatrixEntry {
     runner,
     cache_path: gate.setup === "node" ? `${gate.dir}/pnpm-lock.yaml` : "",
     needs_db: false,
+    fetch_depth: gate.full_history ? 0 : 1,
+    environment: gate.environment ?? "",
+    script: lines.join("\n"),
+  };
+}
+
+// ---- smoke suites ---------------------------------------------------------
+
+function smokeEntry(id: string, suite: SmokeSuite, config: Config): MatrixEntry {
+  const runner = suite.runner;
+  const node = String(config.defaults.node);
+  const python = config.defaults.python;
+  const lines = [SH];
+  if (suite.setup === "node" && suite.install) {
+    lines.push(`( ${cd(suite.dir)} && pnpm install --frozen-lockfile )`);
+  }
+  if (suite.setup === "python" && suite.install) {
+    lines.push(`( ${cd(suite.dir)} && python -m pip install --upgrade pip && pip install -e '.[dev]' )`);
+  }
+  const inner: string[] = [];
+  if (suite.dir !== ".") inner.push(cd(suite.dir));
+  inner.push(...envExports(suite.env));
+  inner.push(suite.run);
+  // A subshell keeps the cd / exports scoped; a single bare run needs no wrap.
+  lines.push(inner.length > 1 ? `(\n  ${inner.join("\n  ")}\n)` : inner[0]!);
+  return {
+    id,
+    setup: suite.setup,
+    node,
+    python,
+    runner,
+    cache_path: suite.setup === "node" ? `${suite.dir}/pnpm-lock.yaml` : "",
+    needs_db: false,
+    fetch_depth: 1,
+    environment: suite.environment ?? "",
     script: lines.join("\n"),
   };
 }
@@ -247,7 +316,17 @@ function vercelScript(t: Extract<Target, { type: "vercel" }>): string {
 
 function migrateScript(t: Extract<Target, { type: "prisma-migrate" }>): string {
   // DATABASE_URL / DIRECT_URL come from the bound GitHub Environment's secrets.
-  const inner = [cd(t.dir), "pnpm install --frozen-lockfile", "pnpm run db:migrate:deploy", "pnpm run db:migrate:status"];
+  const inner = [cd(t.dir), "pnpm install --frozen-lockfile"];
+  if (t.render_sql) {
+    // Print the pending migration SQL before applying, for an auditable record
+    // in the job log. Replays migrations against the shadow DB the deploy job
+    // provides; tolerates an empty/failed diff so it never blocks the deploy.
+    inner.push(
+      `echo '── pending migration SQL ──'`,
+      `(pnpm exec prisma migrate diff --from-config-datasource --to-migrations prisma/migrations --script || echo '(no diff / unavailable)')`,
+    );
+  }
+  inner.push("pnpm run db:migrate:deploy", "pnpm run db:migrate:status");
   if (t.health) inner.push(`curl -fsSL --retry 5 --retry-delay 5 --max-time 10 "${t.health}"`);
   return [`echo "▶ Migrate database"`, `( ${inner.join(" && ")} )`].join("\n");
 }
@@ -300,11 +379,31 @@ function buildDeployPlan(config: Config, ref: string): DeployPlan {
 
 // ---- top-level ------------------------------------------------------------
 
-export function buildPlan(config: Config, ref: string): Plan {
+// Decide whether a gate runs for the triggering event. Only command gates can
+// be event-scoped (via `on` / `base`); typed gates (audit, drift) always run.
+// With no event context (local run / unit test) every gate is included.
+function gateApplies(gate: Gate, opts: PlanOptions): boolean {
+  if (gate.type !== "command") return true;
+  const { event, baseRef } = opts;
+  if (!event) return true;
+  const prOnly = !!(gate.base && gate.base.length);
+  const allowed = prOnly ? ["pull_request"] : (gate.on ?? ["push", "pull_request"]);
+  if (!allowed.includes(event)) return false;
+  // base set → only PRs targeting one of those branches.
+  if (prOnly && baseRef && !gate.base!.includes(baseRef)) return false;
+  return true;
+}
+
+export function buildPlan(config: Config, ref: string, opts: PlanOptions = {}): Plan {
   const components = Object.entries(config.components).map(([id, comp]) =>
     componentEntry(id, comp, config),
   );
-  const gates = Object.entries(config.gates).map(([id, gate]) => gateEntry(id, gate, config));
+  const gates = Object.entries(config.gates)
+    .filter(([, gate]) => gateApplies(gate, opts))
+    .map(([id, gate]) => gateEntry(id, gate, config));
+  const smoke = Object.entries(config.smoke)
+    .filter(([id]) => !opts.suite || id === opts.suite)
+    .map(([id, suite]) => smokeEntry(id, suite, config));
   const deploy = buildDeployPlan(config, ref);
-  return { components, gates, deploy };
+  return { components, gates, smoke, deploy };
 }

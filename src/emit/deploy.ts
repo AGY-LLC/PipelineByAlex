@@ -192,9 +192,23 @@ function migrateJob(t: Extract<Target, { type: "prisma-migrate" }>, ctx: Ctx): J
     checkoutStep(),
     ...setupNodeSteps(t.dir, ctx.config.defaults),
     runStep("Install deps", "pnpm install --frozen-lockfile", { dir: t.dir }),
+  ];
+  if (t.render_sql) {
+    job.steps.push(
+      runStep(
+        "Render pending migration SQL",
+        "pnpm exec prisma migrate diff --from-config-datasource --to-migrations prisma/migrations --script || echo '(no diff / unavailable)'",
+        {
+          dir: t.dir,
+          env: { ...dbEnv, SHADOW_DATABASE_URL: "postgresql://postgres:postgres@localhost:5432/shadow" },
+        },
+      ),
+    );
+  }
+  job.steps.push(
     runStep("Apply migrations", "pnpm run db:migrate:deploy", { dir: t.dir, env: dbEnv }),
     runStep("Verify migration status", "pnpm run db:migrate:status", { dir: t.dir, env: dbEnv }),
-  ];
+  );
   if (t.health) {
     job.steps.push(runStep("Post-migration health smoke", healthProbe(t.health, 5, 5)));
   }
