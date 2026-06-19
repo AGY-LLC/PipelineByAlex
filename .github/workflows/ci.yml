@@ -49,7 +49,7 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: ./pnpm-lock.yaml
-      - name: Install deps
+      - name: Install deps (.)
         working-directory: .
         run: pnpm install --frozen-lockfile
       - name: Workflow drift check (pba check)

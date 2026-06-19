@@ -123,6 +123,18 @@ The app repo must contain whatever the scripts call — `pnpm test`,
 `pnpm run typecheck`, a `Dockerfile` for docker components, `prisma` scripts for
 migrate targets, etc.
 
+### Per-app secret checklist
+
+Before the first deploy run, make sure this repo can see the secrets *its*
+`pba.yml` needs (see §4 for where each lives):
+
+- [ ] The account tokens its deploy targets use (`FLY_API_TOKEN`, `VERCEL_TOKEN`
+      + `VERCEL_ORG_ID`, `EXPO_TOKEN`) are org secrets **scoped to this repo**
+      (or "All repositories"). A CI-only repo needs none.
+- [ ] `VERCEL_PROJECT_ID` repo secret — only if it deploys to Vercel (unique per app).
+- [ ] An Environment per `target.environment` in its `pba.yml`, each with that
+      environment's `DATABASE_URL` + `DIRECT_URL` — only if it has deploy targets.
+
 ## 6. Watch it run
 
 - **Feature branch / PR** → `plan`, `test`, `gates` run; `deploy` is skipped.
