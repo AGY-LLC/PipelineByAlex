@@ -106,6 +106,18 @@ function cmdCheck(args: Args): void {
   process.stdout.write(`pba: ${files.size} workflow file(s) up to date.\n`);
 }
 
+// A matrix entry's `script` embeds component/gate test env values. If any of
+// those tokens (e.g. "postgres", a port, a dummy secret) matches a registered
+// Actions secret value, GitHub redacts the WHOLE job output — the matrix then
+// expands to nothing and the jobs silently never run. Base64 the script so no
+// plaintext token survives in the output; the workflow decodes it before run.
+function encodeScripts<T extends { script: string }>(entries: T[]): Array<Omit<T, "script"> & { script_b64: string }> {
+  return entries.map(({ script, ...rest }) => ({
+    ...rest,
+    script_b64: Buffer.from(script, "utf8").toString("base64"),
+  }));
+}
+
 function cmdPlan(args: Args): void {
   const config = load(args.config);
   const plan = buildPlan(config, args.ref, {
@@ -114,9 +126,9 @@ function cmdPlan(args: Args): void {
     suite: args.suite || undefined,
   });
   writeOutputs({
-    components: JSON.stringify(plan.components),
-    gates: JSON.stringify(plan.gates),
-    smoke: JSON.stringify(plan.smoke),
+    components: JSON.stringify(encodeScripts(plan.components)),
+    gates: JSON.stringify(encodeScripts(plan.gates)),
+    smoke: JSON.stringify(encodeScripts(plan.smoke)),
     deploy_enabled: String(plan.deploy.enabled),
     deploy_environment: plan.deploy.environment,
     deploy_script: plan.deploy.script,

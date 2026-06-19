@@ -103,4 +103,4 @@ jobs:
         with:
           python-version: ${{ matrix.suite.python }}
       - name: Run ${{ matrix.suite.id }}
-        run: ${{ matrix.suite.script }}
+        run: echo '${{ matrix.suite.script_b64 }}' | base64 -d | bash

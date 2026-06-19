@@ -110,7 +110,7 @@ jobs:
         with:
           python-version: ${{ matrix.component.python }}
       - name: Run ${{ matrix.component.id }}
-        run: ${{ matrix.component.script }}
+        run: echo '${{ matrix.component.script_b64 }}' | base64 -d | bash
 
   # ── gates: one job per gate, fanned out from the plan ────────────────────
   gates:
@@ -165,7 +165,7 @@ jobs:
         with:
           python-version: ${{ matrix.gate.python }}
       - name: Run ${{ matrix.gate.id }}
-        run: ${{ matrix.gate.script }}
+        run: echo '${{ matrix.gate.script_b64 }}' | base64 -d | bash
 
   # ── deploy: ordered chain for the ref, gated on test + gates ─────────────
   deploy:
