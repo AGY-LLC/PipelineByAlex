@@ -102,7 +102,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.component.node }}
-          cache: pnpm
+          cache: ${{ matrix.component.cache_path != '' && 'pnpm' || '' }}
           cache-dependency-path: ${{ matrix.component.cache_path }}
       - name: Setup Python
         if: ${{ matrix.component.setup == 'python' }}
@@ -157,7 +157,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.gate.node }}
-          cache: pnpm
+          cache: ${{ matrix.gate.cache_path != '' && 'pnpm' || '' }}
           cache-dependency-path: ${{ matrix.gate.cache_path }}
       - name: Setup Python
         if: ${{ matrix.gate.setup == 'python' }}

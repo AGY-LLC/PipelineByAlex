@@ -95,7 +95,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.suite.node }}
-          cache: pnpm
+          cache: ${{ matrix.suite.cache_path != '' && 'pnpm' || '' }}
           cache-dependency-path: ${{ matrix.suite.cache_path }}
       - name: Setup Python
         if: ${{ matrix.suite.setup == 'python' }}

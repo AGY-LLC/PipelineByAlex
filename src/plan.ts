@@ -190,7 +190,10 @@ function gateEntry(id: string, gate: Gate, config: Config): MatrixEntry {
       node,
       python,
       runner,
-      cache_path: `${gate.dirs[0]}/pnpm-lock.yaml`,
+      // pnpm audit reads the lockfile but never installs, so no pnpm store
+      // exists to cache. Leave cache_path empty so setup-node skips caching —
+      // otherwise its post-step fails trying to save a path that doesn't exist.
+      cache_path: "",
       needs_db: false,
       ...common,
       script: [SH, ...blocks].join("\n"),
