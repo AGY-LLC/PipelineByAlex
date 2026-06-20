@@ -75,6 +75,36 @@ test("deploy plan: matching ref → ordered chain + environment", () => {
   assert.ok(fly >= 0 && migrate > fly && vercel > migrate);
 });
 
+test("vercel target: production uses --prod, custom env uses --target", () => {
+  const base = { needs_ci: [], on: "push" as const };
+  const config = {
+    version: 1 as const,
+    name: "app",
+    ci: { push: ["main", "staging"], pull_request: [], tags: [], cancelInProgress: true },
+    defaults: { runner: "ubuntu-latest", node: 22, python: "3.11" },
+    components: {},
+    gates: {},
+    smoke: {},
+    targets: {
+      "web-prod": { type: "vercel" as const, mode: "cli" as const, dir: "server", target: "production", environment: "production", prod: true },
+      "web-staging": { type: "vercel" as const, mode: "cli" as const, dir: "server", target: "staging", environment: "staging", prod: true },
+    },
+    deploy: {
+      main: { ...base, order: ["web-prod"] },
+      staging: { ...base, order: ["web-staging"] },
+    },
+  };
+  const prod = buildPlan(config as never, "refs/heads/main").deploy.script;
+  assert.match(prod, /vercel build --prod /);
+  assert.match(prod, /vercel deploy --prebuilt --prod /);
+  assert.match(prod, /pull --yes --environment=production/);
+
+  const staging = buildPlan(config as never, "refs/heads/staging").deploy.script;
+  assert.match(staging, /vercel build --target=staging /);
+  assert.match(staging, /vercel deploy --prebuilt --target=staging /);
+  assert.match(staging, /pull --yes --environment=staging/);
+});
+
 test("deploy plan: non-deploy ref → disabled, empty script", () => {
   const d = buildPlan(cfg(), "refs/heads/feature-x").deploy;
   assert.equal(d.enabled, false);

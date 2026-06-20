@@ -195,6 +195,11 @@ const vercelTarget = z
     // Working dir for the vercel CLI (monorepo root or app subdir).
     dir: z.string().default("."),
     prod: z.boolean().default(true),
+    // Vercel deploy target: "production", "preview", or a Custom Environment
+    // slug (e.g. "staging"). Overrides `prod` when set. "production" deploys
+    // with --prod; a custom slug uses `build/deploy --target=<slug>` and
+    // `pull --environment=<slug>` so a branch can ship to a named environment.
+    target: z.string().optional(),
     // Post-deploy health probe URL (absolute).
     health: z.string().optional(),
   })

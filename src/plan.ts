@@ -303,11 +303,14 @@ function vercelScript(t: Extract<Target, { type: "vercel" }>): string {
     }
     return lines.join("\n");
   }
-  const flag = t.prod ? "--prod " : "";
-  const vercelEnv = t.prod ? "production" : "preview";
+  // Resolve the deploy target: explicit `target` wins, else the `prod` boolean
+  // maps to Vercel's built-in production/preview environments.
+  const target = t.target ?? (t.prod ? "production" : "preview");
+  const flag =
+    target === "production" ? "--prod " : target === "preview" ? "" : `--target=${target} `;
   const inner = [
     `${cd(t.dir)}`,
-    `vercel pull --yes --environment=${vercelEnv} --token=$VERCEL_TOKEN`,
+    `vercel pull --yes --environment=${target} --token=$VERCEL_TOKEN`,
     `vercel build ${flag}--token=$VERCEL_TOKEN`,
     `vercel deploy --prebuilt ${flag}--token=$VERCEL_TOKEN`,
   ];
