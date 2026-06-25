@@ -33,6 +33,7 @@ jobs:
       deploy_enabled: ${{ steps.p.outputs.deploy_enabled }}
       deploy_environment: ${{ steps.p.outputs.deploy_environment }}
       deploy_script: ${{ steps.p.outputs.deploy_script }}
+      deploy_pnpm: ${{ steps.p.outputs.deploy_pnpm }}
     steps:
       - name: Checkout app repo (has pba.yml)
         uses: actions/checkout@v4
@@ -49,7 +50,12 @@ jobs:
           # org, never per repo.
           token: ${{ secrets.PBA_READ_TOKEN || github.token }}
 
+      # Pinned to the interpreter's own pnpm — this job installs .pba-tool's deps,
+      # not the caller's. (action-setup@v4 has no default; it needs a version or a
+      # root packageManager, and the caller repo may have neither.)
       - uses: pnpm/action-setup@v4
+        with:
+          version: 11
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -97,6 +103,9 @@ jobs:
       - name: Setup pnpm
         if: ${{ matrix.component.setup == 'node' }}
         uses: pnpm/action-setup@v4
+        with:
+          # From the config's defaults.pnpm; "" → action-setup reads packageManager.
+          version: ${{ matrix.component.pnpm }}
       - name: Setup Node
         if: ${{ matrix.component.setup == 'node' }}
         uses: actions/setup-node@v4
@@ -152,6 +161,9 @@ jobs:
       - name: Setup pnpm
         if: ${{ matrix.gate.setup == 'node' }}
         uses: pnpm/action-setup@v4
+        with:
+          # From the config's defaults.pnpm; "" → action-setup reads packageManager.
+          version: ${{ matrix.gate.pnpm }}
       - name: Setup Node
         if: ${{ matrix.gate.setup == 'node' }}
         uses: actions/setup-node@v4
@@ -207,6 +219,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
+        with:
+          # From the config's defaults.pnpm; "" → action-setup reads packageManager.
+          version: ${{ needs.plan.outputs.deploy_pnpm }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22

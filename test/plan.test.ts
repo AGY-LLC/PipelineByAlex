@@ -50,6 +50,15 @@ test("node component script honors steps + test env", () => {
   assert.match(server.script, /pnpm test/);
 });
 
+test("defaults.pnpm threads into the matrix + deploy for action-setup", () => {
+  const plan = buildPlan(cfg(), "refs/heads/main");
+  assert.equal(plan.components.find((c) => c.id === "server")!.pnpm, "10.12.4");
+  assert.equal(plan.gates.find((g) => g.id === "audit")!.pnpm, "10.12.4");
+  // Omitted defaults.pnpm → "" so action-setup falls back to packageManager.
+  const noPin = buildPlan({ ...cfg(), defaults: { ...cfg().defaults, pnpm: undefined } }, "refs/heads/main");
+  assert.equal(noPin.components.find((c) => c.id === "server")!.pnpm, "");
+});
+
 test("docker python component builds + runs the test image", () => {
   const ai = buildPlan(cfg(), "refs/heads/main").components.find((c) => c.id === "ai")!;
   assert.match(ai.script, /docker build --target production/);

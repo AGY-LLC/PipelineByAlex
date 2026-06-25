@@ -24,6 +24,9 @@ export interface MatrixEntry {
   // GitHub Environment to bind for this job ("" = none). An env-bound gate can
   // read that environment's secrets (e.g. a live-DB preflight).
   environment: string;
+  // pnpm version for pnpm/action-setup ("" = let the action read packageManager
+  // from package.json — passing both errors with ERR_PNPM_BAD_PM_VERSION).
+  pnpm: string;
   script: string;
 }
 
@@ -38,6 +41,8 @@ export interface DeployPlan {
   enabled: boolean;
   environment: string;
   script: string;
+  // pnpm version for the deploy job's setup ("" = read packageManager).
+  pnpm: string;
 }
 
 export interface Plan {
@@ -48,6 +53,11 @@ export interface Plan {
 }
 
 const SH = "set -euo pipefail";
+
+/** The pnpm version to pin in action-setup, or "" to let it read packageManager. */
+function pnpmVersion(config: Config): string {
+  return config.defaults.pnpm != null ? String(config.defaults.pnpm) : "";
+}
 
 function cd(dir: string): string {
   return `cd "${dir}"`;
@@ -121,7 +131,7 @@ function componentEntry(id: string, comp: Component, config: Config): MatrixEntr
   const needs_db = !!comp.services?.postgres;
 
   // Components always check out shallow and bind no environment.
-  const common = { fetch_depth: 1, environment: "" };
+  const common = { fetch_depth: 1, environment: "", pnpm: pnpmVersion(config) };
 
   if (comp.language === "node") {
     return {
@@ -171,7 +181,7 @@ function gateEntry(id: string, gate: Gate, config: Config): MatrixEntry {
   const python = config.defaults.python;
 
   // Defaults shared by the typed gates (audit / drift): shallow, no env.
-  const common = { fetch_depth: 1, environment: "" };
+  const common = { fetch_depth: 1, environment: "", pnpm: pnpmVersion(config) };
 
   if (gate.type === "pnpm-audit") {
     const blocks = gate.dirs.map((dir) =>
@@ -242,6 +252,7 @@ function gateEntry(id: string, gate: Gate, config: Config): MatrixEntry {
     needs_db: false,
     fetch_depth: gate.full_history ? 0 : 1,
     environment: gate.environment ?? "",
+    pnpm: pnpmVersion(config),
     script: lines.join("\n"),
   };
 }
@@ -275,6 +286,7 @@ function smokeEntry(id: string, suite: SmokeSuite, config: Config): MatrixEntry 
     needs_db: false,
     fetch_depth: 1,
     environment: suite.environment ?? "",
+    pnpm: pnpmVersion(config),
     script: lines.join("\n"),
   };
 }
@@ -368,7 +380,7 @@ function buildDeployPlan(config: Config, ref: string): DeployPlan {
       break;
     }
   }
-  if (!matched) return { enabled: false, environment: "", script: "" };
+  if (!matched) return { enabled: false, environment: "", script: "", pnpm: "" };
 
   let environment = "";
   const parts: string[] = [SH];
@@ -380,7 +392,7 @@ function buildDeployPlan(config: Config, ref: string): DeployPlan {
     }
     parts.push(targetScript(target));
   }
-  return { enabled: true, environment, script: parts.join("\n") };
+  return { enabled: true, environment, script: parts.join("\n"), pnpm: pnpmVersion(config) };
 }
 
 // ---- top-level ------------------------------------------------------------
