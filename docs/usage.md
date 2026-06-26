@@ -154,4 +154,5 @@ Before the first deploy run, make sure this repo can see the secrets *its*
 | component job fails on `pnpm: not found` | component `setup` not `node` but script uses pnpm | check `language`/`docker` in `pba.yml` |
 | deploy never runs on `main` | ref doesn't match a `deploy.<branch>` key, or a check failed | confirm a `deploy.main` block; check `test`/`gates` results |
 | migrate step can't connect to DB | `DATABASE_URL`/`DIRECT_URL` not set on the bound Environment | §4 — add Environment secrets |
+| `plan` dies in ~10s: `Multiple versions of pnpm specified` / `ERR_PNPM_BAD_PM_VERSION` | the `plan` job runs with the caller repo's root as cwd; an older central pinned a bare `version:` on `pnpm/action-setup`, which collides with a caller that has a root `packageManager` (callers with no root `package.json`, e.g. growthbyalex, were immune — which is why it slipped through) | fixed in `v1`: the plan job now reads pnpm from the interpreter's own `.pba-tool/package.json` and never touches the caller's manifest. Re-point your caller at `@v1` and re-run. (Do **not** delete your repo's `packageManager` to dodge it.) |
 | `@v1` not found | tag never pushed | §2 |
