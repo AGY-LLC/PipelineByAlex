@@ -51,11 +51,15 @@ jobs:
           token: ${{ secrets.PBA_READ_TOKEN || github.token }}
 
       # Pinned to the interpreter's own pnpm — this job installs .pba-tool's deps,
-      # not the caller's. (action-setup@v4 has no default; it needs a version or a
-      # root packageManager, and the caller repo may have neither.)
+      # not the caller's. Read the version from .pba-tool's OWN packageManager
+      # rather than a bare `version:` input: this job's cwd is the caller repo's
+      # root, so a bare version would collide with the caller's root
+      # packageManager ("Multiple versions of pnpm specified") for any caller
+      # that pins one. Pointing at the interpreter's package.json decouples the
+      # interpreter's pnpm from whatever (if anything) the caller pins.
       - uses: pnpm/action-setup@v4
         with:
-          version: 11
+          package_json_file: .pba-tool/package.json
       - uses: actions/setup-node@v4
         with:
           node-version: 22
