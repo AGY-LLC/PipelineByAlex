@@ -174,9 +174,12 @@ runner installed actually starts (a Mac sitting at the login window runs nothing
   *Install macOS updates* (keep security responses on if you like). Patch on a
   schedule you control instead.
 
-After a reboot, confirm the runner came back:
+After a reboot, confirm the runner came back. `svc.sh` resolves its service
+file relative to the current directory, so you must `cd` in first — invoking it
+by absolute path fails with "Must run from runner root or install is corrupt"
+even when the install is fine:
 ```bash
-~/actions-runner/svc.sh status     # "started"
+cd ~/actions-runner && ./svc.sh status     # "started"
 ```
 
 ---
