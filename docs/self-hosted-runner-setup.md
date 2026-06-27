@@ -62,8 +62,10 @@ gh auth login          # log in as a user with access to AGY-LLC
 
 ### B1. Prerequisites (toolchain the smoke suite needs)
 ```bash
-# Node (the smoke suite uses setup: node) + Maestro (iOS UI test runner)
-brew install node fastlane
+# Node (the smoke suite uses setup: node) + Maestro (iOS UI test runner).
+# CocoaPods is REQUIRED if a smoke suite builds the app on the runner via
+# `expo run:ios` / `pod install` (Xcode does not bundle it).
+brew install node fastlane cocoapods
 
 # Java — REQUIRED by Maestro, which is a JVM app and needs a JDK (17+). Without
 # it, `maestro test` fails with "Java runtime not found". The Temurin *cask*
