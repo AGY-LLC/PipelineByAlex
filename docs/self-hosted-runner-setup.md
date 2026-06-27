@@ -64,10 +64,25 @@ gh auth login          # log in as a user with access to AGY-LLC
 ```bash
 # Node (the smoke suite uses setup: node) + Maestro (iOS UI test runner)
 brew install node fastlane
+
+# Java — REQUIRED by Maestro, which is a JVM app and needs a JDK (17+). Without
+# it, `maestro test` fails with "Java runtime not found". The Temurin *cask*
+# (not the keg-only `openjdk` formula) installs a real .jdk bundle into
+# /Library/Java/JavaVirtualMachines, so /usr/libexec/java_home finds it with no
+# symlink dance. 25 is the current release; 17 or 21 (LTS) also work.
+brew install --cask temurin@25
+/usr/libexec/java_home -v 25      # must print a path — proves macOS resolved it
+
 curl -Ls https://get.maestro.mobile.dev | bash
 echo 'export PATH="$HOME/.maestro/bin:$PATH"' >> ~/.zshrc && source ~/.zshrc
-maestro --version
+maestro --version                 # picks up JAVA_HOME from your login shell here
 ```
+
+> **Why `--version` working in your terminal isn't enough.** The lines above
+> only set up your *interactive login shell*. The runner, once installed as a
+> launchd service in **B4**, does **not** source `~/.zshrc` — so jobs run with a
+> bare PATH and no `JAVA_HOME`, and Maestro fails with "Java runtime not found"
+> even though it works when you type `maestro` yourself. **B3.5** fixes that.
 
 ### B2. Download the runner (latest version, pinned by the API)
 ```bash
@@ -93,6 +108,27 @@ tar xzf runner.tar.gz && rm runner.tar.gz
 > The `--labels` must be a **superset** of every label your smoke suite lists.
 > A suite with `runner: ["self-hosted","macOS","ios"]` requires all three here.
 > (`self-hosted` is always applied automatically, but listing it is harmless.)
+
+### B3.5. Make the toolchain visible to the service (the part everyone misses)
+The launchd service started in B4 runs with a minimal environment — it ignores
+`~/.zshrc`, so `JAVA_HOME` and the `maestro`/Homebrew bins from B1 won't be on
+the job's PATH. The runner loads a **`.env` file in its install dir** at startup
+and injects those into every job. Populate it once:
+
+```bash
+cd ~/actions-runner
+
+# JAVA_HOME — resolved from the Temurin JDK installed in B1
+echo "JAVA_HOME=$(/usr/libexec/java_home -v 25)" >> .env
+
+# PATH — include the JDK, Maestro, and Homebrew bins. Apple Silicon brew lives
+# in /opt/homebrew/bin; Intel in /usr/local/bin — keep both, harmless if absent.
+echo "PATH=$(/usr/libexec/java_home -v 25)/bin:$HOME/.maestro/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin" >> .env
+
+cat .env      # sanity-check the two lines
+```
+> Already installed the service before adding `.env`? Reload it so the new
+> environment takes effect: `./svc.sh stop && ./svc.sh start`.
 
 ### B4. Run it as a background service (survives logout/reboot)
 ```bash
