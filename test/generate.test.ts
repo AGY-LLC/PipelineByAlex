@@ -140,6 +140,24 @@ test("central explicit secrets become a secrets map", () => {
   assert.deepEqual(job.secrets, { VERCEL_TOKEN: "${{ secrets.VERCEL_TOKEN }}" });
 });
 
+test("central runtime keeps targets and deploy as interpreter input", () => {
+  const { config, issues } = parseConfig({
+    version: 1,
+    ci: { push: ["main"], pull_request: [] },
+    targets: { web: { type: "vercel", mode: "cli", target: "production" } },
+    deploy: { main: { order: ["web"] } },
+    central: {
+      repo: "agy/agy-ci",
+      ref: "0123456789abcdef0123456789abcdef01234567",
+      bundle: "pipeline",
+      secrets: [],
+    },
+  });
+  assert.ok(config);
+  assert.equal(hasErrors(issues), false);
+  assert.equal(issues.some((issue) => issue.path === "central"), false);
+});
+
 test("central caller can pass no secrets and only cancels superseded PRs", () => {
   const { config } = parseConfig({
     version: 1,
