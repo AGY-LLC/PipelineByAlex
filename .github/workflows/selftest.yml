@@ -5,13 +5,21 @@
 name: selftest
 
 on:
+  pull_request:
+    branches: [main]
   push:
-    branches: [feat/pba-pipeline-interpreter]
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: selftest-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   ci:
     uses: ./.github/workflows/pipeline.yml
     with:
       pba_ref: ${{ github.sha }}
-    secrets: inherit

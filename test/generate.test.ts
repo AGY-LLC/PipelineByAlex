@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { parse as parseYaml } from "yaml";
 import { hasErrors, parseConfig } from "../src/schema.js";
 import { generateFiles } from "../src/generate.js";
@@ -123,7 +124,7 @@ test("central mode emits a thin caller, not full workflows", () => {
   assert.deepEqual([...files.keys()], [".github/workflows/ci.yml"]); // caller only
 
   const wf = buildCallerWorkflow(config!);
-  const job = wf.jobs.pipeline as CallerJob;
+  const job = wf.jobs.ci as CallerJob;
   assert.equal(job.uses, "agy/agy-ci/.github/workflows/backend-service.yml@v1");
   assert.deepEqual(job.with, { "fly-app": "my-api-prod" });
   assert.equal(job.secrets, "inherit");
@@ -135,8 +136,21 @@ test("central explicit secrets become a secrets map", () => {
     ci: { push: ["main"], pull_request: [] },
     central: { repo: "agy/agy-ci", ref: "v1", bundle: "web-app", secrets: ["VERCEL_TOKEN"] },
   });
-  const job = buildCallerWorkflow(config!).jobs.pipeline as CallerJob;
+  const job = buildCallerWorkflow(config!).jobs.ci as CallerJob;
   assert.deepEqual(job.secrets, { VERCEL_TOKEN: "${{ secrets.VERCEL_TOKEN }}" });
+});
+
+test("central caller can pass no secrets and only cancels superseded PRs", () => {
+  const { config } = parseConfig({
+    version: 1,
+    ci: { push: ["main"], pull_request: ["main"], cancelInProgress: true },
+    central: { repo: "agy/agy-ci", ref: "0123456789abcdef0123456789abcdef01234567", bundle: "pipeline", secrets: [] },
+  });
+  const workflow = buildCallerWorkflow(config!);
+  const job = workflow.jobs.ci as CallerJob;
+  assert.equal(job.secrets, undefined);
+  assert.deepEqual(workflow.permissions, { contents: "read" });
+  assert.equal(workflow.concurrency?.["cancel-in-progress"], "${{ github.event_name == 'pull_request' }}");
 });
 
 test("mutable central ref warns", () => {
@@ -146,4 +160,30 @@ test("mutable central ref warns", () => {
     central: { repo: "agy/agy-ci", ref: "main", bundle: "web-app" },
   });
   assert.ok(issues.some((i) => i.severity === "warning" && i.path === "central.ref"));
+});
+
+test("central pipeline exposes a stable verify check and deploys only after it succeeds", () => {
+  const source = readFileSync(".github/workflows/pipeline.yml", "utf8");
+  const workflow = parseYaml(source) as Record<string, any>;
+  const verify = workflow.jobs.verify;
+  const deploy = workflow.jobs.deploy;
+
+  assert.deepEqual(verify.needs, ["plan", "test", "gates"]);
+  assert.equal(verify.if, "${{ always() }}");
+  const enforcement = String(verify.steps.at(-1)?.run ?? "");
+  assert.match(enforcement, /success\|skipped/);
+  assert.doesNotMatch(enforcement, /!= ['\"]failure/);
+
+  assert.deepEqual(deploy.needs, ["plan", "verify"]);
+  assert.match(deploy.if, /needs\.plan\.result == 'success'/);
+  assert.match(deploy.if, /needs\.verify\.result == 'success'/);
+});
+
+test("central pipeline actions use immutable full commit SHAs", () => {
+  const source = readFileSync(".github/workflows/pipeline.yml", "utf8");
+  const refs = [...source.matchAll(/^\s*uses:\s*([^\s#]+)\s*(?:#.*)?$/gm)].map((match) => match[1]!);
+  assert.ok(refs.length > 0);
+  for (const ref of refs) {
+    assert.match(ref, /@[0-9a-f]{40}$/, `${ref} is not immutable`);
+  }
 });

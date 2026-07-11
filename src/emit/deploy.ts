@@ -10,6 +10,8 @@ import {
   setupNodeSteps,
 } from "./helpers.js";
 
+const VERCEL_CLI_VERSION = "55.0.0";
+
 // ---------------------------------------------------------------------------
 // Per-branch deploy chains. The `order` array IS the needs chain: each target
 // `needs` the one before it, and the first target `needs` the branch's CI
@@ -147,16 +149,15 @@ function vercelJob(t: Extract<Target, { type: "vercel" }>, ctx: Ctx): Job {
   }
 
   // cli: CI owns the deploy. Gated by `needs`, so red CI blocks it.
-  const env = t.environment ?? (t.prod ? "production" : "preview");
-  const job = base(`Deploy to Vercel (${t.prod ? "prod" : "preview"})`, ctx, t.environment);
+  const target = t.target ?? (t.prod ? "production" : "preview");
+  const job = base(`Deploy to Vercel (${target})`, ctx, t.environment);
   job.env = {
     VERCEL_TOKEN: "${{ secrets.VERCEL_TOKEN }}",
     VERCEL_ORG_ID: "${{ secrets.VERCEL_ORG_ID }}",
     VERCEL_PROJECT_ID: "${{ secrets.VERCEL_PROJECT_ID }}",
   };
   job.concurrency = { group: `deploy-vercel-${ctx.branch}`, "cancel-in-progress": false };
-  const flag = t.prod ? "--prod " : "";
-  const vercelEnv = t.prod ? "production" : "preview";
+  const flag = target === "production" ? "--prod " : target === "preview" ? "" : `--target=${target} `;
   job.steps = [
     checkoutStep(),
     {
@@ -164,8 +165,8 @@ function vercelJob(t: Extract<Target, { type: "vercel" }>, ctx: Ctx): Job {
       uses: SETUP_NODE,
       with: { "node-version": ctx.config.defaults.node },
     },
-    runStep("Install Vercel CLI", "npm install --global vercel@latest"),
-    runStep("Pull Vercel env", `vercel pull --yes --environment=${vercelEnv} --token=$VERCEL_TOKEN`, {
+    runStep("Install Vercel CLI", `npm install --global vercel@${VERCEL_CLI_VERSION}`),
+    runStep("Pull Vercel env", `vercel pull --yes --environment=${target} --token=$VERCEL_TOKEN`, {
       dir: t.dir,
     }),
     runStep("Build", `vercel build ${flag}--token=$VERCEL_TOKEN`, { dir: t.dir }),

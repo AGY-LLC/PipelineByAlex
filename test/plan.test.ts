@@ -104,6 +104,8 @@ test("vercel target: production uses --prod, custom env uses --target", () => {
     },
   };
   const prod = buildPlan(config as never, "refs/heads/main").deploy.script;
+  assert.match(prod, /npm install --global vercel@55\.0\.0/);
+  assert.doesNotMatch(prod, /vercel@latest/);
   assert.match(prod, /vercel build --prod /);
   assert.match(prod, /vercel deploy --prebuilt --prod /);
   assert.match(prod, /pull --yes --environment=production/);

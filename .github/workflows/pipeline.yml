@@ -17,8 +17,24 @@ on:
         description: Path to the declarative config in the caller repo.
         type: string
         default: pba.yml
-    # Secrets are passed by the caller via `secrets: inherit`; with inherit a
-    # called workflow can reference any inherited secret without declaring it.
+    secrets:
+      PBA_READ_TOKEN:
+        description: Optional token for a private PipelineByAlex repository.
+        required: false
+      FLY_API_TOKEN:
+        required: false
+      VERCEL_TOKEN:
+        required: false
+      VERCEL_ORG_ID:
+        required: false
+      VERCEL_PROJECT_ID:
+        required: false
+      EXPO_TOKEN:
+        required: false
+      DATABASE_URL:
+        required: false
+      DIRECT_URL:
+        required: false
 
 permissions:
   contents: read
@@ -27,6 +43,7 @@ jobs:
   # ── plan: run the interpreter once, emit matrices + deploy script ─────────
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       components: ${{ steps.p.outputs.components }}
       gates: ${{ steps.p.outputs.gates }}
@@ -35,15 +52,23 @@ jobs:
       deploy_script: ${{ steps.p.outputs.deploy_script }}
       deploy_pnpm: ${{ steps.p.outputs.deploy_pnpm }}
     steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
+
       - name: Checkout app repo (has pba.yml)
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Checkout pba interpreter
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: AGY-LLC/pipelinebyalex
           ref: ${{ inputs.pba_ref }}
           path: .pba-tool
+          persist-credentials: false
           # Public central repo / same-repo self-test: github.token works.
           # Private central repo: set an org secret PBA_READ_TOKEN (a PAT or App
           # token with Contents:read) and it's used instead — define once at the
@@ -57,10 +82,10 @@ jobs:
       # packageManager ("Multiple versions of pnpm specified") for any caller
       # that pins one. Pointing at the interpreter's package.json decouples the
       # interpreter's pnpm from whatever (if anything) the caller pins.
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           package_json_file: .pba-tool/package.json
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
@@ -88,6 +113,7 @@ jobs:
       matrix:
         component: ${{ fromJSON(needs.plan.outputs.components) }}
     runs-on: ${{ matrix.component.runner }}
+    timeout-minutes: 30
     services:
       postgres:
         image: postgres:16
@@ -103,23 +129,29 @@ jobs:
     env:
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/app_test
     steps:
-      - uses: actions/checkout@v4
+      - name: Harden runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - name: Setup pnpm
         if: ${{ matrix.component.setup == 'node' }}
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           # From the config's defaults.pnpm; "" → action-setup reads packageManager.
           version: ${{ matrix.component.pnpm }}
       - name: Setup Node
         if: ${{ matrix.component.setup == 'node' }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.component.node }}
           cache: ${{ matrix.component.cache_path != '' && 'pnpm' || '' }}
           cache-dependency-path: ${{ matrix.component.cache_path }}
       - name: Setup Python
         if: ${{ matrix.component.setup == 'python' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.component.python }}
       - name: Run ${{ matrix.component.id }}
@@ -134,6 +166,7 @@ jobs:
       matrix:
         gate: ${{ fromJSON(needs.plan.outputs.gates) }}
     runs-on: ${{ matrix.gate.runner }}
+    timeout-minutes: 30
     # A gate may bind a GitHub Environment (e.g. a live staging-DB preflight) to
     # read that environment's secrets / honor its rules. Empty string = none.
     environment: ${{ matrix.gate.environment }}
@@ -158,40 +191,77 @@ jobs:
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
       BASE_REF: ${{ github.base_ref }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Harden runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           # 0 = full history (merge-base / append-only diffs); 1 = shallow.
           fetch-depth: ${{ matrix.gate.fetch_depth }}
+          persist-credentials: false
       - name: Setup pnpm
         if: ${{ matrix.gate.setup == 'node' }}
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           # From the config's defaults.pnpm; "" → action-setup reads packageManager.
           version: ${{ matrix.gate.pnpm }}
       - name: Setup Node
         if: ${{ matrix.gate.setup == 'node' }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.gate.node }}
           cache: ${{ matrix.gate.cache_path != '' && 'pnpm' || '' }}
           cache-dependency-path: ${{ matrix.gate.cache_path }}
       - name: Setup Python
         if: ${{ matrix.gate.setup == 'python' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.gate.python }}
       - name: Run ${{ matrix.gate.id }}
         run: echo '${{ matrix.gate.script_b64 }}' | base64 -d | bash
 
-  # ── deploy: ordered chain for the ref, gated on test + gates ─────────────
-  deploy:
+  # ── verify: stable aggregate check for branch protection ─────────────────
+  verify:
     needs: [plan, test, gates]
-    # Wait for CI; run only if the ref deploys AND nothing failed. A red test
-    # or gate (failure) blocks the deploy; skipped (no components/gates) does not.
-    if: >-
-      ${{ always() && needs.plan.outputs.deploy_enabled == 'true'
-          && needs.test.result != 'failure' && needs.gates.result != 'failure' }}
+    if: ${{ always() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
+      - name: Enforce required outcomes
+        env:
+          PLAN_RESULT: ${{ needs.plan.result }}
+          TEST_RESULT: ${{ needs.test.result }}
+          GATES_RESULT: ${{ needs.gates.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ "$PLAN_RESULT" = "success" ] || {
+            echo "Plan result must be success; got $PLAN_RESULT" >&2
+            exit 1
+          }
+          for result in "$TEST_RESULT" "$GATES_RESULT"; do
+            case "$result" in
+              success|skipped) ;;
+              *) echo "CI prerequisite must be success or skipped; got $result" >&2; exit 1 ;;
+            esac
+          done
+
+  # ── deploy: ordered chain for the ref, gated on aggregate verify ─────────
+  deploy:
+    needs: [plan, verify]
+    # Wait for the stable aggregate check. Cancelled, failed, or timed-out
+    # prerequisites can never reach this job; skipped deploy refs stay inert.
+    if: >-
+      ${{ always() && needs.plan.result == 'success'
+          && needs.verify.result == 'success'
+          && needs.plan.outputs.deploy_enabled == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     environment: ${{ needs.plan.outputs.deploy_environment }}
     concurrency:
       group: deploy-${{ github.repository }}-${{ github.ref }}
@@ -221,12 +291,18 @@ jobs:
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
       SHADOW_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/shadow
     steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
+      - name: Harden runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
         with:
           # From the config's defaults.pnpm; "" → action-setup reads packageManager.
           version: ${{ needs.plan.outputs.deploy_pnpm }}
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
       - name: Deploy

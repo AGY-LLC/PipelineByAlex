@@ -23,14 +23,22 @@ export function buildCallerWorkflow(config: Config): Workflow {
     uses: `${c.repo}/.github/workflows/${bundle}@${c.ref}`,
   };
   if (c.with && Object.keys(c.with).length) job.with = c.with;
-  job.secrets =
-    c.secrets === "inherit"
-      ? "inherit"
-      : Object.fromEntries(c.secrets.map((name) => [name, `\${{ secrets.${name} }}`]));
+  if (c.secrets === "inherit") {
+    job.secrets = "inherit";
+  } else if (c.secrets.length > 0) {
+    job.secrets = Object.fromEntries(c.secrets.map((name) => [name, `\${{ secrets.${name} }}`]));
+  }
 
   return {
     name: "CI",
     on,
-    jobs: { pipeline: job },
+    permissions: { contents: "read" },
+    concurrency: {
+      group: "ci-${{ github.workflow }}-${{ github.ref }}",
+      "cancel-in-progress": config.ci.cancelInProgress
+        ? "${{ github.event_name == 'pull_request' }}"
+        : false,
+    },
+    jobs: { ci: job },
   };
 }
