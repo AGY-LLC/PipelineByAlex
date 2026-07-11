@@ -132,6 +132,7 @@ function cmdPlan(args: Args): void {
     deploy_enabled: String(plan.deploy.enabled),
     deploy_environment: plan.deploy.environment,
     deploy_script: plan.deploy.script,
+    deploy_needs_db: String(plan.deploy.needs_db),
     deploy_pnpm: plan.deploy.pnpm,
   });
 }

@@ -50,6 +50,7 @@ jobs:
       deploy_enabled: ${{ steps.p.outputs.deploy_enabled }}
       deploy_environment: ${{ steps.p.outputs.deploy_environment }}
       deploy_script: ${{ steps.p.outputs.deploy_script }}
+      deploy_needs_db: ${{ steps.p.outputs.deploy_needs_db }}
       deploy_pnpm: ${{ steps.p.outputs.deploy_pnpm }}
     steps:
       - name: Harden runner
@@ -116,7 +117,8 @@ jobs:
     timeout-minutes: 30
     services:
       postgres:
-        image: postgres:16
+        # An empty image disables the service; most components need no DB.
+        image: ${{ matrix.component.needs_db && 'postgres:16' || '' }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -172,7 +174,8 @@ jobs:
     environment: ${{ matrix.gate.environment }}
     services:
       postgres:
-        image: postgres:16
+        # An empty image disables the service; audit/command gates stay lean.
+        image: ${{ matrix.gate.needs_db && 'postgres:16' || '' }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
@@ -270,7 +273,8 @@ jobs:
     # to print the pending SQL before applying. Unused by other targets.
     services:
       postgres:
-        image: postgres:16
+        # Start the shadow DB only when the selected deploy chain migrates.
+        image: ${{ needs.plan.outputs.deploy_needs_db == 'true' && 'postgres:16' || '' }}
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres

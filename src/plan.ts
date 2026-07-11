@@ -41,6 +41,8 @@ export interface DeployPlan {
   enabled: boolean;
   environment: string;
   script: string;
+  // Whether the ordered deploy chain contains a database migration target.
+  needs_db: boolean;
   // pnpm version for the deploy job's setup ("" = read packageManager).
   pnpm: string;
 }
@@ -381,19 +383,21 @@ function buildDeployPlan(config: Config, ref: string): DeployPlan {
       break;
     }
   }
-  if (!matched) return { enabled: false, environment: "", script: "", pnpm: "" };
+  if (!matched) return { enabled: false, environment: "", script: "", needs_db: false, pnpm: "" };
 
   let environment = "";
+  let needs_db = false;
   const parts: string[] = [SH];
   for (const name of matched.order) {
     const target = config.targets[name];
     if (!target) continue;
+    if (target.type === "prisma-migrate") needs_db = true;
     if (!environment && "environment" in target && target.environment) {
       environment = target.environment;
     }
     parts.push(targetScript(target));
   }
-  return { enabled: true, environment, script: parts.join("\n"), pnpm: pnpmVersion(config) };
+  return { enabled: true, environment, script: parts.join("\n"), needs_db, pnpm: pnpmVersion(config) };
 }
 
 // ---- top-level ------------------------------------------------------------
