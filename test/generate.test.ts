@@ -205,3 +205,10 @@ test("central pipeline actions use immutable full commit SHAs", () => {
     assert.match(ref, /@[0-9a-f]{40}$/, `${ref} is not immutable`);
   }
 });
+
+test("central pipeline starts Postgres only for matrix or deploy plans that need it", () => {
+  const source = readFileSync(".github/workflows/pipeline.yml", "utf8");
+  assert.match(source, /image: \$\{\{ matrix\.component\.needs_db && 'postgres:16' \|\| '' \}\}/);
+  assert.match(source, /image: \$\{\{ matrix\.gate\.needs_db && 'postgres:16' \|\| '' \}\}/);
+  assert.match(source, /image: \$\{\{ needs\.plan\.outputs\.deploy_needs_db == 'true' && 'postgres:16' \|\| '' \}\}/);
+});

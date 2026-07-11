@@ -76,6 +76,7 @@ test("gates: audit + prisma-drift, drift needs db", () => {
 test("deploy plan: matching ref → ordered chain + environment", () => {
   const d = buildPlan(cfg(), "refs/heads/main").deploy;
   assert.equal(d.enabled, true);
+  assert.equal(d.needs_db, true);
   assert.equal(d.environment, "production");
   // order preserved: fly before migrate before vercel
   const fly = d.script.indexOf("Deploy my-app to Fly");
@@ -114,11 +115,13 @@ test("vercel target: production uses --prod, custom env uses --target", () => {
   assert.match(staging, /vercel build --target=staging /);
   assert.match(staging, /vercel deploy --prebuilt --target=staging /);
   assert.match(staging, /pull --yes --environment=staging/);
+  assert.equal(buildPlan(config as never, "refs/heads/main").deploy.needs_db, false);
 });
 
 test("deploy plan: non-deploy ref → disabled, empty script", () => {
   const d = buildPlan(cfg(), "refs/heads/feature-x").deploy;
   assert.equal(d.enabled, false);
+  assert.equal(d.needs_db, false);
   assert.equal(d.environment, "");
   assert.equal(d.script, "");
 });
