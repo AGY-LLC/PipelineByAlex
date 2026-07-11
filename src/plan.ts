@@ -53,6 +53,7 @@ export interface Plan {
 }
 
 const SH = "set -euo pipefail";
+const VERCEL_CLI_VERSION = "55.0.0";
 
 /** The pnpm version to pin in action-setup, or "" to let it read packageManager. */
 function pnpmVersion(config: Config): string {
@@ -327,7 +328,7 @@ function vercelScript(t: Extract<Target, { type: "vercel" }>): string {
     `vercel deploy --prebuilt ${flag}--token=$VERCEL_TOKEN`,
   ];
   if (t.health) inner.push(`curl -fsSL --retry 5 --retry-delay 5 --max-time 10 "${t.health}"`);
-  return [`echo "▶ Deploy to Vercel"`, "npm install --global vercel@latest", `( ${inner.join(" && ")} )`].join(
+  return [`echo "▶ Deploy to Vercel"`, `npm install --global vercel@${VERCEL_CLI_VERSION}`, `( ${inner.join(" && ")} )`].join(
     "\n",
   );
 }

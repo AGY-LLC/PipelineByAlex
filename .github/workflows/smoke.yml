@@ -22,8 +22,25 @@ on:
         description: Run only this smoke suite by name (empty = all suites).
         type: string
         default: ""
-    # Secrets arrive via the caller's `secrets: inherit`. The smoke job forwards
-    # a conventional set below; name your secrets to match (or extend this list).
+    secrets:
+      PBA_READ_TOKEN:
+        required: false
+      STAGING_API_URL:
+        required: false
+      STAGING_APP_URL:
+        required: false
+      PRODUCTION_APP_URL:
+        required: false
+      TEST_PHONE:
+        required: false
+      TEST_OTP:
+        required: false
+      DATABASE_URL:
+        required: false
+      DIRECT_URL:
+        required: false
+      EXPO_TOKEN:
+        required: false
 
 permissions:
   contents: read
@@ -32,22 +49,32 @@ jobs:
   # ── plan: interpret pba.yml → smoke matrix ───────────────────────────────
   plan:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     outputs:
       smoke: ${{ steps.p.outputs.smoke }}
     steps:
+      - name: Harden runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
       - name: Checkout app repo (has pba.yml)
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
 
       - name: Checkout pba interpreter
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
           repository: AGY-LLC/pipelinebyalex
           ref: ${{ inputs.pba_ref }}
           path: .pba-tool
+          persist-credentials: false
           token: ${{ secrets.PBA_READ_TOKEN || github.token }}
 
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
+      - uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
+        with:
+          package_json_file: .pba-tool/package.json
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
 
@@ -71,6 +98,7 @@ jobs:
       matrix:
         suite: ${{ fromJSON(needs.plan.outputs.smoke) }}
     runs-on: ${{ matrix.suite.runner }}
+    timeout-minutes: 45
     # Bind a deployed environment (its secrets / reviewers) when the suite asks.
     environment: ${{ matrix.suite.environment }}
     # Conventional secret passthrough for staging e2e / device suites. An unset
@@ -86,20 +114,26 @@ jobs:
       DIRECT_URL: ${{ secrets.DIRECT_URL }}
       EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - name: Harden runner
+        uses: step-security/harden-runner@bf7454d06d71f1098171f2acdf0cd4708d7b5920 # v2
+        with:
+          egress-policy: audit
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          persist-credentials: false
       - name: Setup pnpm
         if: ${{ matrix.suite.setup == 'node' }}
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4
       - name: Setup Node
         if: ${{ matrix.suite.setup == 'node' }}
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: ${{ matrix.suite.node }}
           cache: ${{ matrix.suite.cache_path != '' && 'pnpm' || '' }}
           cache-dependency-path: ${{ matrix.suite.cache_path }}
       - name: Setup Python
         if: ${{ matrix.suite.setup == 'python' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: ${{ matrix.suite.python }}
       - name: Run ${{ matrix.suite.id }}

@@ -409,16 +409,10 @@ export function parseConfig(raw: unknown): ParseResult {
     }
   }
 
-  // Central (caller) mode: local logic is ignored — the central bundle owns it.
+  // Central (caller) mode still keeps components, gates, targets, and deploy as
+  // runtime input for the central interpreter. Only the generated workflow is
+  // replaced by a thin caller.
   if (config.central) {
-    if (Object.keys(config.deploy).length || Object.keys(config.targets).length) {
-      issues.push({
-        path: "central",
-        message:
-          "central mode emits a caller; `targets`/`deploy` are ignored (the central bundle owns deploy logic). Remove them or drop `central`.",
-        severity: "warning",
-      });
-    }
     // A mutable ref (branch, or a moving major tag like v1) means a change in
     // the central repo can break every caller at once. Flag plain branch refs.
     if (!/^v?\d+\.\d+\.\d+$/.test(config.central.ref) && !/^[0-9a-f]{40}$/.test(config.central.ref)) {

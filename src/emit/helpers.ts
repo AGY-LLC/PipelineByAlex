@@ -30,7 +30,7 @@ export interface Workflow {
   name: string;
   on: Record<string, unknown>;
   permissions?: Record<string, string>;
-  concurrency?: { group: string; "cancel-in-progress": boolean };
+  concurrency?: { group: string; "cancel-in-progress": boolean | string };
   jobs: Record<string, Job | CallerJob>;
 }
 
@@ -54,16 +54,18 @@ export function orderJobKeys(job: Job): Job {
   return out as unknown as Job;
 }
 
-export const CHECKOUT = "actions/checkout@v4";
-export const SETUP_NODE = "actions/setup-node@v4";
-export const SETUP_PNPM = "pnpm/action-setup@v4";
-export const SETUP_PYTHON = "actions/setup-python@v5";
-export const EXPO_ACTION = "expo/expo-github-action@v8";
-export const UPLOAD_ARTIFACT = "actions/upload-artifact@v4";
+export const CHECKOUT = "actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5"; // v4
+export const SETUP_NODE = "actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020"; // v4
+export const SETUP_PNPM = "pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1"; // v4
+export const SETUP_PYTHON = "actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065"; // v5
+export const EXPO_ACTION = "expo/expo-github-action@c7b66a9c327a43a8fa7c0158e7f30d6040d2481e"; // v8
+export const UPLOAD_ARTIFACT = "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"; // v4
 
 export function checkoutStep(opts?: { fetchDepth?: number }): Step {
-  const step: Step = { uses: CHECKOUT };
-  if (opts?.fetchDepth !== undefined) step.with = { "fetch-depth": opts.fetchDepth };
+  const step: Step = { uses: CHECKOUT, with: { "persist-credentials": false } };
+  if (opts?.fetchDepth !== undefined) {
+    step.with = { ...step.with as Record<string, unknown>, "fetch-depth": opts.fetchDepth };
+  }
   return step;
 }
 
