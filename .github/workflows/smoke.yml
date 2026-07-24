@@ -137,4 +137,15 @@ jobs:
         with:
           python-version: ${{ matrix.suite.python }}
       - name: Run ${{ matrix.suite.id }}
-        run: echo '${{ matrix.suite.script_b64 }}' | base64 -d | bash
+        # Decode to a FILE, then run the file. Piping the script into `bash`
+        # makes the script bash's stdin, which any daemon the suite starts
+        # (adb, ssh, simulator helpers) inherits and can consume — bash then
+        # hits EOF early and exits 0 with most of the suite never executed, so
+        # the run goes green having silently skipped its checks. Seen live: an
+        # Android suite that stopped at `adb start-server` and still passed.
+        # Device suites are the worst place for a false green, hence the fix.
+        env:
+          PBA_SCRIPT_B64: ${{ matrix.suite.script_b64 }}
+        run: |
+          printf '%s' "$PBA_SCRIPT_B64" | base64 -d > "$RUNNER_TEMP/pba-suite.sh"
+          bash "$RUNNER_TEMP/pba-suite.sh"

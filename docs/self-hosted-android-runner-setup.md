@@ -355,7 +355,8 @@ jobs:
 | `device offline` / stale `emulator-5554` | Orphaned emulator from a killed job: `adb kill-server && pkill -f qemu-system` on the host, then re-run. The `trap` in Part D prevents most of these. |
 | `adb install` fails with `INSTALL_FAILED_ALREADY_EXISTS` | Missing `-r`, or a debug/release signature mismatch — `adb uninstall <applicationId>` first. |
 | Both suites suddenly flaky when run together | RAM contention with the iOS Simulator. See B7. |
-| Runner shows Offline after a reboot | `cd ~/actions-runner-android && ./svc.sh status` — `svc.sh` must be run from its own root, not by absolute path. |
+| Runner shows Offline after a reboot | `cd ~/actions-runner-android && ./svc.sh status` — `svc.sh` must be run from its own root, not by absolute path. Also check auto-login: the service is a LaunchAgent and does not start at the login window. |
+| Job sits **queued forever** while the runner is online and idle | The calling repo is **public** and the runner group has `allows_public_repositories: false`. GitHub silently refuses to assign the job — no error, no timeout. Dispatch from a private repo instead: `gh api /repos/OWNER/REPO --jq .visibility` and `gh api /orgs/AGY-LLC/actions/runner-groups`. Do **not** flip the group flag; see Security below. |
 
 ---
 
