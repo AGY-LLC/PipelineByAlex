@@ -22,6 +22,10 @@ on:
         description: Run only this smoke suite by name (empty = all suites).
         type: string
         default: ""
+      timeout_minutes:
+        description: Per-suite job timeout. Raise for suites that build from source.
+        type: number
+        default: 90
     secrets:
       PBA_READ_TOKEN:
         required: false
@@ -98,7 +102,11 @@ jobs:
       matrix:
         suite: ${{ fromJSON(needs.plan.outputs.smoke) }}
     runs-on: ${{ matrix.suite.runner }}
-    timeout-minutes: 45
+    # Device suites that build the app from source on the runner (expo prebuild
+    # + xcodebuild / Gradle) blow past 45 min on a cold cache — a first Android
+    # Gradle build on an Intel Mac alone can take ~30. The runner is self-hosted,
+    # so a longer ceiling costs no billed minutes; it only bounds a hung job.
+    timeout-minutes: ${{ inputs.timeout_minutes }}
     # Bind a deployed environment (its secrets / reviewers) when the suite asks.
     environment: ${{ matrix.suite.environment }}
     # Conventional secret passthrough for staging e2e / device suites. An unset
