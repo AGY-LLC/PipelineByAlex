@@ -13,10 +13,11 @@ Full write-up: [`../../docs/centralized-ci.md`](../../docs/centralized-ci.md).
   deploy-fly.yml        # block: fly deploy + health probe
   deploy-vercel.yml     # block: gated vercel CLI deploy
   eas-build.yml         # block: mobile EAS build
-  ios-maestro.yml       # block: iOS UI tests on a macOS runner
+  ios-maestro.yml       # block: iOS UI tests on a macOS runner (one device/call)
+  android-maestro.yml   # block: Android UI tests on a headless emulator
   backend-service.yml   # bundle: test → deploy-fly
   web-app.yml           # bundle: test → deploy-vercel
-  mobile-app.yml        # bundle: test → ios-maestro → eas-build
+  mobile-app.yml        # bundle: test → ios-maestro (+android-maestro) → eas-build
 callers/                # copy ONE of these into each app repo as ci.yml
   backend-ci.yml
   web-ci.yml
@@ -38,3 +39,25 @@ callers/                # copy ONE of these into each app repo as ci.yml
    `.github/workflows/ci.yml`.
 7. (Optional, org) Add a **ruleset** → "Require workflows to pass before
    merging" to force CI on every repo.
+
+## Mobile UI suites — iPhone, iPad, Android
+
+`mobile-app.yml` fans out to all three off one caller. `ios-simulators` matrixes
+`ios-maestro.yml` (one job per device name); `android-ui` toggles the emulator
+suite:
+
+```yaml
+with:
+  ios-simulators: '["iPhone 15","iPad Pro 13-inch (M4)"]'
+  android-ui: true
+```
+
+Device names must match `xcrun simctl list devices available` on the runner
+**exactly** — the iPad model name changes with each Xcode release, and a wrong
+name now fails the job loudly instead of silently testing the wrong device. Host
+setup: [`../../docs/self-hosted-runner-setup.md`](../../docs/self-hosted-runner-setup.md)
+(iPhone + iPad) and
+[`../../docs/self-hosted-android-runner-setup.md`](../../docs/self-hosted-android-runner-setup.md).
+
+The iOS legs share one runner instance, so they run sequentially, not in
+parallel.

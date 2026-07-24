@@ -1,0 +1,77 @@
+# Reusable: Android UI tests via Maestro on a headless emulator.
+# Caller passes runner: '["self-hosted","macOS","android"]' to target the Mac's
+# Android runner instance; default ubuntu-latest exists only so the workflow is
+# valid when unused. Host setup: docs/self-hosted-android-runner-setup.md.
+name: android-maestro
+
+on:
+  workflow_call:
+    inputs:
+      working-directory:
+        type: string
+        default: "."
+      runner:
+        type: string
+        default: "ubuntu-latest"
+      avd:
+        type: string
+        default: "pba-android"
+      flows:
+        type: string
+        default: ".maestro/"
+      apk:
+        description: Path to an APK to install before the flows (empty = skip).
+        type: string
+        default: ""
+
+jobs:
+  ui-test:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    # Bounded: `adb wait-for-device` blocks forever if the emulator dies on
+    # launch, and a hung job holds the runner instance and the AVD hostage.
+    timeout-minutes: 45
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Maestro
+        run: |
+          curl -Ls https://get.maestro.mobile.dev | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+      - name: Boot emulator (headless)
+        # Inputs go through env, never straight into the shell: this job runs on
+        # a self-hosted host, so an injected string would execute on your Mac.
+        env:
+          AVD: ${{ inputs.avd }}
+        run: |
+          set -euo pipefail
+          adb start-server
+          # Full path: launching `emulator` via a symlink breaks AVD discovery.
+          # swiftshader_indirect: -gpu host needs a window server the launchd
+          # runner service does not have.
+          "$ANDROID_HOME/emulator/emulator" -avd "$AVD" \
+            -no-window -no-audio -no-boot-anim -no-snapshot -wipe-data \
+            -gpu swiftshader_indirect >"$RUNNER_TEMP/emulator.log" 2>&1 &
+          adb wait-for-device
+          # No `timeout` on macOS — poll with a deadline instead (~5 min).
+          for i in $(seq 1 150); do
+            [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && booted=1 && break
+            sleep 2
+          done
+          if [ "${booted:-0}" != "1" ]; then
+            echo "emulator never finished booting"; tail -50 "$RUNNER_TEMP/emulator.log"; exit 1
+          fi
+          adb shell input keyevent 82   # dismiss keyguard
+      - name: Install APK
+        if: inputs.apk != ''
+        env:
+          APK: ${{ inputs.apk }}
+        run: adb install -r "$APK"
+      - name: Run Maestro flows
+        env:
+          FLOWS: ${{ inputs.flows }}
+        run: maestro test "$FLOWS"
+      - name: Shut down emulator
+        if: always()
+        run: adb emu kill || true

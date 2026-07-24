@@ -1,0 +1,106 @@
+# Diagnostic for a self-hosted runner. Dispatch-only, never runs on push.
+#
+# Answers the question `svc.sh status` cannot: does a JOB — running under the
+# launchd service, with none of your ~/.zshrc — actually see the toolchain? A
+# wrong or missing `.env` in the runner's install dir passes every host-side
+# check and fails only here.
+#
+#   gh workflow run runner-doctor.yml                      # android runner
+#   gh workflow run runner-doctor.yml -f runner='["self-hosted","macOS","ios"]' -f boot_emulator=false
+name: runner doctor
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner:
+        description: Runner labels as a JSON array.
+        type: string
+        default: '["self-hosted","macOS","android"]'
+      boot_emulator:
+        description: Boot the AVD end-to-end (Android runners only).
+        type: boolean
+        default: true
+      avd:
+        description: AVD name to boot.
+        type: string
+        default: pba-android
+
+permissions:
+  contents: read
+
+jobs:
+  doctor:
+    runs-on: ${{ fromJSON(inputs.runner) }}
+    timeout-minutes: 30
+    steps:
+      - name: Environment the service hands to jobs
+        run: |
+          echo "user:  $(whoami)"
+          echo "host:  $(hostname)  ($(uname -m))"
+          echo "shell: $SHELL"
+          echo
+          echo "JAVA_HOME=${JAVA_HOME:-<UNSET>}"
+          echo "ANDROID_HOME=${ANDROID_HOME:-<UNSET>}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-<UNSET>}"
+          echo "ANDROID_AVD_HOME=${ANDROID_AVD_HOME:-<UNSET>}"
+          echo
+          echo "PATH entries:"
+          echo "$PATH" | tr ':' '\n' | sed 's/^/  /'
+
+      - name: Toolchain resolves
+        run: |
+          fail=0
+          for t in java node adb maestro; do
+            if p=$(command -v "$t" 2>/dev/null); then
+              printf '  ok    %-8s %s\n' "$t" "$p"
+            else
+              printf '  MISS  %-8s not on PATH — check the runner .env\n' "$t"
+              fail=1
+            fi
+          done
+          if [ -x "${ANDROID_HOME:-/nonexistent}/emulator/emulator" ]; then
+            printf '  ok    %-8s %s\n' emulator "$ANDROID_HOME/emulator/emulator"
+          else
+            printf '  MISS  %-8s ANDROID_HOME unset or SDK incomplete\n' emulator
+            fail=1
+          fi
+          echo
+          java -version 2>&1 | head -1
+          exit $fail
+
+      - name: AVDs visible to the service
+        run: |
+          # Empty here but populated in your shell = ANDROID_AVD_HOME is wrong,
+          # or the service runs as a different user than the one that made them.
+          "$ANDROID_HOME/emulator/emulator" -list-avds
+
+      - name: Boot the AVD headless
+        if: ${{ inputs.boot_emulator }}
+        env:
+          AVD: ${{ inputs.avd }}
+        run: |
+          set -uo pipefail
+          adb start-server
+          "$ANDROID_HOME/emulator/emulator" -avd "$AVD" \
+            -no-window -no-audio -no-boot-anim -no-snapshot -no-metrics \
+            -gpu swiftshader_indirect >"$RUNNER_TEMP/emulator.log" 2>&1 &
+          adb wait-for-device
+          booted=0
+          for i in $(seq 1 150); do
+            if [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ]; then
+              booted=1; break
+            fi
+            sleep 2
+          done
+          if [ "$booted" != "1" ]; then
+            echo "emulator never booted under the service:"
+            tail -40 "$RUNNER_TEMP/emulator.log"
+            exit 1
+          fi
+          echo "booted in ~$((i * 2))s"
+          adb devices
+          adb shell getprop ro.product.cpu.abilist
+
+      - name: Shut down emulator
+        if: ${{ always() && inputs.boot_emulator }}
+        run: adb emu kill || true

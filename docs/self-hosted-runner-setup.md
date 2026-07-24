@@ -1,12 +1,17 @@
 # Standing up the self-hosted macOS runner (AGY-LLC org)
 
-Runbook for the iOS / Maestro smoke path described in
+Runbook for the iOS / iPad Maestro smoke path described in
 [`centralized-ci.md` §10](./centralized-ci.md). Once a runner with the right
 labels is **Idle** in the org, the `runner: [...]` field on a `smoke:` suite in
 `pba.yml` resolves to a real `runs-on` target and the central `smoke.yml`
 matrix job lands on your Mac.
 
 Run everything in **Part B** on the macOS host. Parts A/C are GitHub-side.
+
+> **Want Android too?** Add a second runner instance on this same Mac driving a
+> headless emulator —
+> [`self-hosted-android-runner-setup.md`](./self-hosted-android-runner-setup.md).
+> It reuses the JDK and Maestro installed in B1 here.
 
 ---
 
@@ -47,7 +52,12 @@ xcode-select --install            # command-line tools (compilers, git)
 # finishes "Installing components". Then point the toolchain at it:
 sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 sudo xcodebuild -license accept
-xcrun simctl list devices available | grep -i iphone   # must list a simulator
+
+# Both iPhone and iPad form factors come from the same Xcode iOS runtime — no
+# extra download. Confirm both, and COPY THE EXACT NAMES: the smoke suites match
+# them literally, and the iPad model name changes with each Xcode release
+# ("iPad Pro 13-inch (M4)" today, "iPad Pro (12.9-inch) (6th generation)" before).
+xcrun simctl list devices available | grep -iE 'iphone|ipad'
 
 # 2. Homebrew (package manager — not preinstalled on macOS)
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
@@ -207,12 +217,34 @@ gh api /orgs/AGY-LLC/actions/runners --jq '.runners[] | {name, status, labels: [
        setup: node
        environment: staging          # binds env-scoped secrets / reviewers
        env:
+         SIM_DEVICE: iPhone 15
          MAESTRO_FLOW_DIR: .maestro/acceptance
        run: |
-         curl -Ls https://get.maestro.mobile.dev | bash
-         xcrun simctl boot "iPhone 15" || true
-         maestro test "$MAESTRO_FLOW_DIR"
+         set -euo pipefail
+         command -v maestro >/dev/null || {
+           curl -Ls https://get.maestro.mobile.dev | bash
+           export PATH="$HOME/.maestro/bin:$PATH"
+         }
+         UDID=$(xcrun simctl list devices available | grep -F "    $SIM_DEVICE (" \
+                | head -1 | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/' || true)
+         [ -n "$UDID" ] || { echo "no simulator named '$SIM_DEVICE'"; exit 1; }
+         trap 'xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true' EXIT
+         xcrun simctl shutdown all || true
+         xcrun simctl bootstatus "$UDID" -b
+         maestro --device "$UDID" test "$MAESTRO_FLOW_DIR"
    ```
+
+   **Add an `ipad-acceptance` suite** by copying that block and changing only
+   `SIM_DEVICE` to your iPad's exact name from B0. Full copy-paste version in
+   [`pba.example.yml`](../pba.example.yml).
+
+   > **Why not just `xcrun simctl boot "iPhone 15" || true`?** Two reasons, and
+   > both bite the moment a second device joins. The `|| true` swallows "device
+   > not found", so a stale iPad model name reports green while testing nothing
+   > new. And `maestro test` with no `--device` picks arbitrarily among *booted*
+   > simulators — an iPhone left running by the previous suite means the iPad
+   > suite silently retests the iPhone. Resolving the UDID, shutting down the
+   > rest, and pinning `--device` closes both.
 
 2. **Add the thin smoke caller** in the app repo
    (`.github/workflows/smoke.yml`) — `workflow_dispatch` → the central reusable
@@ -233,11 +265,38 @@ gh api /orgs/AGY-LLC/actions/runners --jq '.runners[] | {name, status, labels: [
 
 3. **Dispatch and watch it land on the Mac:**
    ```bash
-   gh workflow run smoke.yml -f suite=ios-acceptance
+   gh workflow run smoke.yml -f suite=ios-acceptance   # or ipad-acceptance
+   gh workflow run smoke.yml                           # empty = every suite
    gh run watch
    ```
    The `plan` job (Ubuntu) interprets `pba.yml`; the `smoke` matrix job picks up
    `runs-on: ["self-hosted","macOS","ios"]` and executes on your runner.
+
+---
+
+## Covering all three form factors
+
+With the Android runbook applied too, one Mac serves iPhone, iPad, and Android:
+
+| Suite | Runner instance | Device |
+|---|---|---|
+| `ios-acceptance` | `…-ios` | iPhone simulator |
+| `ipad-acceptance` | `…-ios` | iPad simulator |
+| `android-acceptance` | `…-android` | headless AVD |
+
+**A runner instance runs one job at a time.** iPhone and iPad share the `ios`
+instance, so they run back to back — dispatching all three gives you roughly
+`iPhone + iPad` wall clock, with Android overlapping on its own instance. If
+that serialisation gets painful, register a third instance labelled
+`self-hosted,macOS,ipad` (same steps as the Android doc's B4–B6, no Android SDK
+needed) and point the iPad suite at it — but budget the RAM first
+([Android B7](./self-hosted-android-runner-setup.md#b7-resource-budget)): two
+Simulators plus an emulator will swap a 16 GB Mac into the ground.
+
+> One caveat if you do split: the suites call `xcrun simctl shutdown all`, which
+> is host-wide, so an `ipad` instance would kill the `ios` instance's simulator
+> mid-run. Swap that line for `xcrun simctl shutdown "$UDID" || true` in both
+> suites before running two iOS instances side by side.
 
 ---
 

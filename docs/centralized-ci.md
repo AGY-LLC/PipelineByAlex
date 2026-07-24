@@ -125,10 +125,11 @@ agy-ci/
       deploy-vercel.yml      # vercel pull/build/deploy (gated)
       eas-build.yml          # mobile EAS build
       ios-maestro.yml        # iOS UI tests on a macOS runner
+      android-maestro.yml    # Android UI tests on a headless emulator
       # ── bundles (compose blocks per repo TYPE) ──
       web-app.yml            # node-test → deploy-vercel
       backend-service.yml    # node/python-test → docker-build → deploy-fly → migrate
-      mobile-app.yml         # node-test → eas-build → ios-maestro
+      mobile-app.yml         # node-test → ios/android-maestro → eas-build
 ```
 
 Building blocks are reused everywhere; bundles are per-type one-liners so a
@@ -203,7 +204,7 @@ tangle. Use **small single-purpose blocks + one bundle per type**:
 |---|---|---|
 | Web | `web-app.yml` | node-test → deploy-vercel |
 | Backend | `backend-service.yml` | node/python-test → docker-build → deploy-fly → migrate |
-| Mobile | `mobile-app.yml` | node-test → eas-build → ios-maestro |
+| Mobile | `mobile-app.yml` | node-test → ios-maestro (+ android-maestro) → eas-build |
 | Fullstack | `web-app.yml` **and** `backend-service.yml` as two jobs (or a `fullstack.yml` bundle) | both chains, gated per surface |
 
 New repo of a known type = one `uses:` line. New capability = edit one block in
@@ -239,6 +240,13 @@ jobs:
 
 The mobile caller passes `runner: '["self-hosted","macOS","ios"]'`. Web/backend
 repos never touch the mac.
+
+**Android on the same Mac.** Register a *second* runner instance (own install
+dir, own `--name`, labels `[self-hosted, macOS, android]`) and drive a headless
+AVD — one instance runs one job at a time, so a shared runner would serialise the
+two platforms. Block: `android-maestro.yml`; suite config and the full host
+runbook (SDK, AVD, launchd `.env`, firewall, troubleshooting) live in
+[`self-hosted-android-runner-setup.md`](./self-hosted-android-runner-setup.md).
 
 **Security:** self-hosted runners + **public** repos is dangerous (fork PRs can
 run code on your machine). Keep mac-runner repos **private**, or gate with
