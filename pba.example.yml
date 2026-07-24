@@ -95,6 +95,90 @@ deploy:
     needs_ci: [server, app, audit, prisma-drift, ai-service]
     order: [fly-prod, migrate-prod, web-prod]
 
+# ── smoke: manual device suites on the self-hosted Mac ─────────────────────
+# Dispatched via the thin smoke caller, never on push. Each suite picks its
+# runner by label; host runbooks live in docs/self-hosted-runner-setup.md
+# (iOS + iPad) and docs/self-hosted-android-runner-setup.md (Android).
+# Three form factors, one Mac: iPhone and iPad share the `ios` instance and run
+# one after the other; Android has its own instance and runs alongside them.
+# Dispatch one at a time with `-f suite=ipad-acceptance`, or all three with an
+# empty suite input.
+smoke:
+  ios-acceptance:
+    runner: ["self-hosted", "macOS", "ios"]
+    setup: node
+    environment: staging
+    env:
+      SIM_DEVICE: iPhone 15
+      MAESTRO_FLOW_DIR: .maestro/acceptance
+    run: |
+      set -euo pipefail
+      command -v maestro >/dev/null || {
+        curl -Ls https://get.maestro.mobile.dev | bash
+        export PATH="$HOME/.maestro/bin:$PATH"
+      }
+      # Resolve the name to a UDID and pin Maestro to it. Booting by name with
+      # `|| true` hides a typo'd/absent device and lets the flows run against
+      # whatever simulator happened to be up already.
+      UDID=$(xcrun simctl list devices available | grep -F "    $SIM_DEVICE (" \
+             | head -1 | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/' || true)
+      [ -n "$UDID" ] || { echo "no simulator named '$SIM_DEVICE'"; xcrun simctl list devices available; exit 1; }
+      trap 'xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true' EXIT
+      xcrun simctl shutdown all || true   # one booted device, or Maestro guesses
+      xcrun simctl bootstatus "$UDID" -b  # boot + block until ready
+      maestro --device "$UDID" test "$MAESTRO_FLOW_DIR"
+  ipad-acceptance:
+    # Same host and runner instance as ios-acceptance — only the device differs,
+    # so the two queue behind each other rather than running in parallel.
+    runner: ["self-hosted", "macOS", "ios"]
+    setup: node
+    environment: staging
+    env:
+      # Verify with `xcrun simctl list devices available | grep -i ipad`; the
+      # model name shifts every Xcode release.
+      SIM_DEVICE: iPad Pro 13-inch (M4)
+      MAESTRO_FLOW_DIR: .maestro/acceptance
+    run: |
+      set -euo pipefail
+      command -v maestro >/dev/null || {
+        curl -Ls https://get.maestro.mobile.dev | bash
+        export PATH="$HOME/.maestro/bin:$PATH"
+      }
+      UDID=$(xcrun simctl list devices available | grep -F "    $SIM_DEVICE (" \
+             | head -1 | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/' || true)
+      [ -n "$UDID" ] || { echo "no simulator named '$SIM_DEVICE'"; xcrun simctl list devices available; exit 1; }
+      trap 'xcrun simctl shutdown "$UDID" >/dev/null 2>&1 || true' EXIT
+      xcrun simctl shutdown all || true
+      xcrun simctl bootstatus "$UDID" -b
+      maestro --device "$UDID" test "$MAESTRO_FLOW_DIR"
+  android-acceptance:
+    # Second runner instance on the same Mac; boots a headless AVD per run.
+    runner: ["self-hosted", "macOS", "android"]
+    setup: node
+    environment: staging
+    env:
+      AVD_NAME: pba-android
+      MAESTRO_FLOW_DIR: .maestro/acceptance
+    run: |
+      set -euo pipefail
+      command -v maestro >/dev/null || {
+        curl -Ls https://get.maestro.mobile.dev | bash
+        export PATH="$HOME/.maestro/bin:$PATH"
+      }
+      trap 'adb emu kill >/dev/null 2>&1 || true' EXIT
+      adb start-server
+      "$ANDROID_HOME/emulator/emulator" -avd "$AVD_NAME" \
+        -no-window -no-audio -no-boot-anim -no-snapshot -wipe-data \
+        -gpu swiftshader_indirect >"$RUNNER_TEMP/emulator.log" 2>&1 &
+      adb wait-for-device
+      for i in $(seq 1 150); do
+        [ "$(adb shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && booted=1 && break
+        sleep 2
+      done
+      [ "${booted:-0}" = "1" ] || { tail -50 "$RUNNER_TEMP/emulator.log"; exit 1; }
+      adb shell input keyevent 82
+      maestro test "$MAESTRO_FLOW_DIR"
+
 # ── mobile: independent EAS release (tag + manual dispatch) ────────────────
 mobile:
   trigger:

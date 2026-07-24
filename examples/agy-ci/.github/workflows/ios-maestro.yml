@@ -1,6 +1,9 @@
 # Reusable: iOS UI tests via Maestro on a macOS runner.
 # Caller passes runner: '["self-hosted","macOS","ios"]' to target your Mac;
 # default ubuntu-latest exists only so the workflow is valid when unused.
+# One call = one device. To cover several form factors (iPhone + iPad), let the
+# mobile-app.yml bundle matrix over `ios-simulators`.
+# Host setup: docs/self-hosted-runner-setup.md.
 name: ios-maestro
 
 on:
@@ -13,6 +16,9 @@ on:
         type: string
         default: "ubuntu-latest"
       simulator:
+        description: >-
+          Exact simctl device name, e.g. "iPhone 15" or "iPad Pro 13-inch (M4)".
+          Must appear in `xcrun simctl list devices available` on the runner.
         type: string
         default: "iPhone 15"
       flows:
@@ -22,6 +28,9 @@ on:
 jobs:
   ui-test:
     runs-on: ${{ fromJSON(inputs.runner) }}
+    # Bounded: a simulator that never finishes booting would otherwise hold the
+    # runner instance hostage, and this host has only one iOS instance.
+    timeout-minutes: 30
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
@@ -32,6 +41,40 @@ jobs:
           curl -Ls https://get.maestro.mobile.dev | bash
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
       - name: Boot simulator
-        run: xcrun simctl boot "${{ inputs.simulator }}" || true
+        id: sim
+        # Input goes through env, never straight into the shell: this job runs
+        # on a self-hosted host, so an injected string would execute on your Mac.
+        env:
+          SIM: ${{ inputs.simulator }}
+        run: |
+          set -euo pipefail
+          # Resolve the name to a UDID. grep -F keeps names containing parens
+          # ("iPad Pro 13-inch (M4)") literal, and the trailing " (" anchors the
+          # match so "iPhone 15" cannot select "iPhone 15 Pro". `|| true` keeps
+          # a no-match from tripping pipefail before the error below prints.
+          UDID=$(xcrun simctl list devices available \
+                 | grep -F "    $SIM (" | head -1 \
+                 | sed -E 's/.*\(([0-9A-Fa-f-]{36})\).*/\1/' || true)
+          if [ -z "$UDID" ]; then
+            echo "::error::no available simulator named '$SIM' on this runner"
+            xcrun simctl list devices available
+            exit 1
+          fi
+          # Exactly one device booted at a time. Maestro picks arbitrarily when
+          # several are up, so an iPhone left running by an earlier matrix leg
+          # would make the iPad leg silently retest the iPhone.
+          # (Assumes a single iOS runner instance per host — a second instance
+          # running in parallel would have its simulator shut down here too.)
+          xcrun simctl shutdown all || true
+          xcrun simctl bootstatus "$UDID" -b    # boots, then blocks until ready
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
       - name: Run Maestro flows
-        run: maestro test "${{ inputs.flows }}"
+        env:
+          FLOWS: ${{ inputs.flows }}
+          UDID: ${{ steps.sim.outputs.udid }}
+        run: maestro --device "$UDID" test "$FLOWS"
+      - name: Shut down simulator
+        if: always()
+        env:
+          UDID: ${{ steps.sim.outputs.udid }}
+        run: '[ -z "$UDID" ] || xcrun simctl shutdown "$UDID" || true'

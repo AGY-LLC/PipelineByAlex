@@ -1,5 +1,6 @@
 # Drop this in a MOBILE repo at .github/workflows/ci.yml.
-# A mobile-v* tag triggers the EAS production build; pushes run tests + iOS UI.
+# A mobile-v* tag triggers the EAS production build; pushes run tests + the UI
+# suites on the self-hosted Mac (iPhone sim, iPad sim, Android emulator).
 name: CI
 on:
   push:
@@ -14,4 +15,11 @@ jobs:
     with:
       profile: production
       platform: all
+      # Three form factors on the one Mac. Device names must exist in
+      # `xcrun simctl list devices available` — check yours before copying,
+      # the iPad model name changes with each Xcode release.
+      ios-simulators: '["iPhone 15","iPad Pro 13-inch (M4)"]'
+      # Needs the second (android-labelled) runner instance online:
+      # docs/self-hosted-android-runner-setup.md. Drop to false if it isn't.
+      android-ui: true
     secrets: inherit

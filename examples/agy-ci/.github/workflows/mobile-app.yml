@@ -1,5 +1,8 @@
-# Reusable BUNDLE for a mobile app: test → eas-build → ios-maestro.
-# Mobile build runs on the EAS release ref; iOS UI tests run on the mac runner.
+# Reusable BUNDLE for a mobile app: test → ios-maestro (+ android-maestro) →
+# eas-build. Mobile build runs on the EAS release ref; the UI suites run on the
+# mac runner instances. `ios-simulators` takes a JSON array, so one caller can
+# cover iPhone *and* iPad form factors. Android is opt-in (android-ui: true) so
+# repos without an Android runner online are unaffected.
 name: mobile-app
 
 on:
@@ -20,6 +23,21 @@ on:
       ios-runner:
         type: string
         default: '["self-hosted","macOS","ios"]'
+      ios-simulators:
+        description: >-
+          JSON array of simctl device names to run the iOS suite against — one
+          job per entry. Add an iPad here to cover both form factors, e.g.
+          '["iPhone 15","iPad Pro 13-inch (M4)"]'. Names must match
+          `xcrun simctl list devices available` on the runner exactly.
+        type: string
+        default: '["iPhone 15"]'
+      android-ui:
+        description: Run the Android Maestro suite (needs an android-labelled runner).
+        type: boolean
+        default: false
+      android-runner:
+        type: string
+        default: '["self-hosted","macOS","android"]'
     secrets:
       EXPO_TOKEN:
         required: true
@@ -33,14 +51,39 @@ jobs:
 
   ios-ui:
     needs: test
+    # One leg per simulator. They land on the same runner instance, which takes
+    # one job at a time — so N devices means N× the wall clock, not parallel.
+    strategy:
+      # An iPad failure must not cancel an in-flight iPhone leg: you want both
+      # reports, and a half-torn-down simulator leaks into the next run.
+      fail-fast: false
+      matrix:
+        simulator: ${{ fromJSON(inputs.ios-simulators) }}
     uses: agy/agy-ci/.github/workflows/ios-maestro.yml@v1
     with:
       working-directory: ${{ inputs.working-directory }}
       runner: ${{ inputs.ios-runner }}
+      simulator: ${{ matrix.simulator }}
+
+  android-ui:
+    if: inputs.android-ui
+    needs: test
+    uses: agy/agy-ci/.github/workflows/android-maestro.yml@v1
+    with:
+      working-directory: ${{ inputs.working-directory }}
+      runner: ${{ inputs.android-runner }}
 
   build:
-    needs: [test, ios-ui]
-    if: github.ref == inputs.build-ref
+    needs: [test, ios-ui, android-ui]
+    # `always()` is required: without it a SKIPPED android-ui (the default)
+    # would skip build too. The explicit result checks keep a real UI failure
+    # blocking the release.
+    if: >-
+      always()
+      && github.ref == inputs.build-ref
+      && needs.test.result == 'success'
+      && needs.ios-ui.result == 'success'
+      && (needs.android-ui.result == 'success' || needs.android-ui.result == 'skipped')
     uses: agy/agy-ci/.github/workflows/eas-build.yml@v1
     with:
       working-directory: ${{ inputs.working-directory }}
