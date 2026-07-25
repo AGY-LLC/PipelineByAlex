@@ -157,7 +157,17 @@ jobs:
         with:
           python-version: ${{ matrix.component.python }}
       - name: Run ${{ matrix.component.id }}
-        run: echo '${{ matrix.component.script_b64 }}' | base64 -d | bash
+        # Decode to a FILE, then run the file. Piping the script into `bash`
+        # makes the script bash's stdin, which any daemon the script starts
+        # (adb, ssh, docker) inherits and can consume — bash then hits EOF
+        # early and exits 0 with most of the script never executed, so the job
+        # goes green having silently skipped its work. Seen live: an emulator
+        # suite that stopped at `adb start-server` and still passed.
+        env:
+          PBA_SCRIPT_B64: ${{ matrix.component.script_b64 }}
+        run: |
+          printf '%s' "$PBA_SCRIPT_B64" | base64 -d > "$RUNNER_TEMP/pba-component.sh"
+          bash "$RUNNER_TEMP/pba-component.sh"
 
   # ── gates: one job per gate, fanned out from the plan ────────────────────
   gates:
@@ -222,7 +232,12 @@ jobs:
         with:
           python-version: ${{ matrix.gate.python }}
       - name: Run ${{ matrix.gate.id }}
-        run: echo '${{ matrix.gate.script_b64 }}' | base64 -d | bash
+        # Decode to a file first — see the component job's note above.
+        env:
+          PBA_SCRIPT_B64: ${{ matrix.gate.script_b64 }}
+        run: |
+          printf '%s' "$PBA_SCRIPT_B64" | base64 -d > "$RUNNER_TEMP/pba-gate.sh"
+          bash "$RUNNER_TEMP/pba-gate.sh"
 
   # ── verify: stable aggregate check for branch protection ─────────────────
   verify:
