@@ -16,7 +16,7 @@ permissions:
 jobs:
   tool:
     name: Tool (install + typecheck + test)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -40,7 +40,7 @@ jobs:
         run: pnpm test
   drift:
     name: Workflow drift check (pba check)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:

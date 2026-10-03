@@ -52,7 +52,7 @@ permissions:
 jobs:
   # ── plan: interpret pba.yml → smoke matrix ───────────────────────────────
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     outputs:
       smoke: ${{ steps.p.outputs.smoke }}

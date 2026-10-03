@@ -42,7 +42,7 @@ permissions:
 jobs:
   # ── plan: run the interpreter once, emit matrices + deploy script ─────────
   plan:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 15
     outputs:
       components: ${{ steps.p.outputs.components }}
@@ -243,7 +243,7 @@ jobs:
   verify:
     needs: [plan, test, gates]
     if: ${{ always() }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 5
     steps:
       - name: Harden runner
@@ -278,7 +278,7 @@ jobs:
       ${{ always() && needs.plan.result == 'success'
           && needs.verify.result == 'success'
           && needs.plan.outputs.deploy_enabled == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     timeout-minutes: 30
     environment: ${{ needs.plan.outputs.deploy_environment }}
     concurrency:
