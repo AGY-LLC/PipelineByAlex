@@ -4,7 +4,7 @@ version: 1
 name: pipeline-by-alex
 
 defaults:
-  runner: ubuntu-latest
+  runner: ubuntu-26.04
   node: 22
 
 components:
